@@ -1,0 +1,13 @@
+key.txt
+.env
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+data/
+outputs/
+*.pt
+*.pth
+*.ckpt
+*.zip

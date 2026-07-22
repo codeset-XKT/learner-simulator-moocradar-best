@@ -1,0 +1,2 @@
+# Minimal scaffold uses only the Python standard library.
+
