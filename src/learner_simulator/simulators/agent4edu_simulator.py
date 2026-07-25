@@ -79,6 +79,7 @@ class Agent4EduBaselineSimulator(RandomLearnerSimulator):
                 "learner_profile": profile_context,
                 "memory_context": memory_context,
                 "kc_routes": routes,
+                "question_type": qmeta.get("type"),
                 "content": qmeta.get("content"),
                 "options": qmeta.get("options"),
                 "answer": qmeta.get("answer"),

@@ -160,6 +160,7 @@ def evaluate_steps(steps: list[dict[str, Any]], threshold: float = 0.5) -> dict[
         metrics["four_tier_diagnosis_counts"] = _counts(
             [item["diagnosis"] for item in four_tier]
         )
+        metrics.update(four_tier_consistency_metrics(four_tier))
 
     cognitive_evidence = extract_cognitive_strategy_diagnostics(steps)
     if cognitive_evidence:
@@ -173,6 +174,9 @@ def evaluate_steps(steps: list[dict[str, Any]], threshold: float = 0.5) -> dict[
             )
             for signal in sorted({item["evidence_signal"] for item in cognitive_evidence})
         }
+    task_diagnostics = extract_simulation_task_diagnostics(steps)
+    if task_diagnostics:
+        metrics.update(simulation_task_metrics(task_diagnostics, threshold=threshold))
     return metrics
 
 
@@ -407,6 +411,7 @@ def extract_four_tier_diagnostics(
                     assessment.get("reasoning_confidence", 0.5)
                 ),
                 "answer_correct": assessment.get("answer_correct"),
+                "reasoning_correct": assessment.get("reasoning_correct"),
                 "fully_scored": bool(assessment.get("fully_scored", False)),
                 "diagnosis": str(assessment.get("diagnosis", "unknown")),
             }
@@ -437,6 +442,257 @@ def extract_cognitive_strategy_diagnostics(
             }
         )
     return diagnostics
+
+
+def extract_simulation_task_diagnostics(
+    steps: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    diagnostics: list[dict[str, Any]] = []
+    for step in steps:
+        tasks = step.get("simulation_tasks")
+        if not isinstance(tasks, dict):
+            continue
+        task2 = tasks.get("task2_item_conditioned_activation")
+        task3 = tasks.get("task3_four_tier_response_generation")
+        task4 = tasks.get("task4_state_evolution") or step.get("state_evolution")
+        anchor = task2.get("kt_decision_anchor") if isinstance(task2, dict) else None
+        diagnostics.append(
+            {
+                "real_response": int(step["real_response"]),
+                "task1_available": isinstance(
+                    tasks.get("task1_learner_state_inference"),
+                    dict,
+                ),
+                "selected_concept": (
+                    task2.get("selected_concept") if isinstance(task2, dict) else None
+                ),
+                "true_concept": (
+                    task2.get("true_concept") if isinstance(task2, dict) else None
+                ),
+                "concept_match": (
+                    task2.get("concept_match") if isinstance(task2, dict) else None
+                ),
+                "kt_anchor_probability": (
+                    anchor.get("probability") if isinstance(anchor, dict) else None
+                ),
+                "kt_anchor_predicted_response": (
+                    anchor.get("predicted_response") if isinstance(anchor, dict) else None
+                ),
+                "kt_anchor_confidence_band": (
+                    anchor.get("confidence_band") if isinstance(anchor, dict) else None
+                ),
+                "task3_answer_correct": (
+                    task3.get("answer_correct") if isinstance(task3, dict) else None
+                ),
+                "task3_answer_confidence": (
+                    task3.get("answer_confidence") if isinstance(task3, dict) else None
+                ),
+                "state_feedback_mode": (
+                    task4.get("feedback_mode") if isinstance(task4, dict) else None
+                ),
+                "mastery_delta": (
+                    task4.get("mastery_delta") if isinstance(task4, dict) else None
+                ),
+            }
+        )
+    return diagnostics
+
+
+def simulation_task_metrics(
+    items: list[dict[str, Any]],
+    threshold: float = 0.5,
+) -> dict[str, Any]:
+    metrics: dict[str, Any] = {
+        "simulation_task_count": len(items),
+        "task1_state_inference_count": sum(
+            bool(item["task1_available"]) for item in items
+        ),
+    }
+
+    concept_items = [
+        item for item in items
+        if item["selected_concept"] is not None and item["concept_match"] is not None
+    ]
+    if concept_items:
+        metrics["task2_concept_perception_count"] = len(concept_items)
+        metrics["task2_concept_accuracy"] = round(
+            _mean([int(bool(item["concept_match"])) for item in concept_items]),
+            6,
+        )
+
+    anchor_items = [
+        item for item in items
+        if item["kt_anchor_predicted_response"] is not None
+    ]
+    if anchor_items:
+        y_true = [int(item["real_response"]) for item in anchor_items]
+        y_pred = [int(item["kt_anchor_predicted_response"]) for item in anchor_items]
+        y_prob = [
+            float(item["kt_anchor_probability"])
+            for item in anchor_items
+            if item["kt_anchor_probability"] is not None
+        ]
+        metrics.update(
+            {
+                "task2_kt_anchor_count": len(anchor_items),
+                "task2_kt_anchor_acc": round(accuracy(y_true, y_pred), 6),
+                "task2_kt_anchor_f1": round(f1_score(y_true, y_pred), 6),
+                "task2_kt_anchor_balanced_accuracy": _round_or_none(
+                    balanced_accuracy(y_true, y_pred)
+                ),
+                "task2_kt_anchor_specificity": _round_or_none(
+                    specificity(y_true, y_pred)
+                ),
+                "task2_kt_anchor_mcc": _round_or_none(
+                    matthews_corrcoef(y_true, y_pred)
+                ),
+                "task2_kt_anchor_confusion": confusion_matrix(y_true, y_pred),
+                "task2_kt_anchor_confidence_band_counts": _counts(
+                    [
+                        str(item["kt_anchor_confidence_band"])
+                        for item in anchor_items
+                    ]
+                ),
+            }
+        )
+        if len(y_prob) == len(anchor_items):
+            metrics["task2_kt_anchor_auc"] = _round_or_none(
+                binary_auc(y_true, y_prob)
+            )
+
+    response_items = [
+        item for item in items
+        if item["task3_answer_correct"] is not None
+    ]
+    if response_items:
+        y_true = [int(item["real_response"]) for item in response_items]
+        y_pred = [int(bool(item["task3_answer_correct"])) for item in response_items]
+        metrics.update(
+            {
+                "task3_response_generation_count": len(response_items),
+                "task3_response_acc": round(accuracy(y_true, y_pred), 6),
+                "task3_response_f1": round(f1_score(y_true, y_pred), 6),
+                "task3_response_balanced_accuracy": _round_or_none(
+                    balanced_accuracy(y_true, y_pred)
+                ),
+                "task3_response_specificity": _round_or_none(
+                    specificity(y_true, y_pred)
+                ),
+                "task3_response_mcc": _round_or_none(
+                    matthews_corrcoef(y_true, y_pred)
+                ),
+                "task3_response_confusion": confusion_matrix(y_true, y_pred),
+            }
+        )
+
+    deltas = [
+        float(item["mastery_delta"])
+        for item in items
+        if item["mastery_delta"] is not None
+    ]
+    if deltas:
+        metrics["task4_state_evolution_count"] = len(deltas)
+        metrics["task4_mean_mastery_delta"] = round(_mean(deltas), 6)
+        metrics["task4_mean_abs_mastery_delta"] = round(
+            _mean([abs(delta) for delta in deltas]),
+            6,
+        )
+        metrics["task4_positive_update_rate"] = round(
+            _mean([int(delta > 0) for delta in deltas]),
+            6,
+        )
+        metrics["task4_negative_update_rate"] = round(
+            _mean([int(delta < 0) for delta in deltas]),
+            6,
+        )
+        metrics["task4_feedback_mode_counts"] = _counts(
+            [
+                str(item["state_feedback_mode"])
+                for item in items
+                if item["state_feedback_mode"] is not None
+            ]
+        )
+    return metrics
+
+
+def four_tier_consistency_metrics(items: list[dict[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    answer_scored = [item for item in items if item["answer_correct"] is not None]
+    reasoning_scored = [
+        item
+        for item in items
+        if item["answer_correct"] is not None and item["reasoning_correct"] is not None
+    ]
+    if answer_scored:
+        answer_true = [int(bool(item["answer_correct"])) for item in answer_scored]
+        answer_conf = [float(item["answer_confidence"]) for item in answer_scored]
+        result["four_tier_answer_confidence_ece"] = _round_or_none(
+            calibration_ece(answer_true, answer_conf, bins=5)
+        )
+        result["four_tier_high_confidence_accuracy"] = _round_or_none(
+            _conditional_rate(
+                answer_scored,
+                lambda item: float(item["answer_confidence"]) >= 0.75,
+                lambda item: int(bool(item["answer_correct"])),
+            )
+        )
+        result["four_tier_low_confidence_accuracy"] = _round_or_none(
+            _conditional_rate(
+                answer_scored,
+                lambda item: float(item["answer_confidence"]) < 0.5,
+                lambda item: int(bool(item["answer_correct"])),
+            )
+        )
+        result["four_tier_answer_reasoning_confidence_gap"] = round(
+            _mean(
+                [
+                    abs(
+                        float(item["answer_confidence"])
+                        - float(item["reasoning_confidence"])
+                    )
+                    for item in answer_scored
+                ]
+            ),
+            6,
+        )
+    if reasoning_scored:
+        result["four_tier_answer_reasoning_correctness_consistency"] = round(
+            _mean(
+                [
+                    int(bool(item["answer_correct"]) == bool(item["reasoning_correct"]))
+                    for item in reasoning_scored
+                ]
+            ),
+            6,
+        )
+    else:
+        result["four_tier_answer_reasoning_correctness_consistency"] = None
+    return result
+
+
+def calibration_ece(
+    y_true: list[int],
+    y_prob: list[float],
+    bins: int = 5,
+) -> float | None:
+    if not y_true:
+        return None
+    total = len(y_true)
+    error = 0.0
+    for index in range(bins):
+        lower = index / bins
+        upper = (index + 1) / bins
+        bucket = [
+            (truth, prob)
+            for truth, prob in zip(y_true, y_prob)
+            if (prob >= lower and (prob < upper or index == bins - 1))
+        ]
+        if not bucket:
+            continue
+        accuracy_value = _mean([truth for truth, _ in bucket])
+        confidence_value = _mean([prob for _, prob in bucket])
+        error += (len(bucket) / total) * abs(accuracy_value - confidence_value)
+    return error
 
 
 def _cognitive_evidence_signal(strategy: dict[str, Any]) -> str:
@@ -541,6 +797,17 @@ def _strategy_metrics(items: list[dict[str, Any]]) -> dict[str, Any]:
             }
         )
     return result
+
+
+def _conditional_rate(
+    items: list[dict[str, Any]],
+    predicate: Any,
+    value: Any,
+) -> float | None:
+    selected = [item for item in items if predicate(item)]
+    if not selected:
+        return None
+    return _mean([value(item) for item in selected])
 
 
 def _mean(values: list[int] | list[float]) -> float:

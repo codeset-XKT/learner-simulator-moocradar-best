@@ -4,6 +4,19 @@ from typing import Any
 
 
 def build_profile_system_prompt(profile: dict[str, Any]) -> str:
+    stable_profile = profile.get("learner_profile_evidence")
+    if not stable_profile and profile.get("module") == "learner_profile_evidence":
+        stable_profile = profile
+    if isinstance(stable_profile, dict):
+        return (
+            "You are simulating one specific high school student's first independent attempt on an online learning platform. "
+            "The learner identity is defined by the stable learner profile below, not by generic demographics. "
+            "Use ordinary student-level reasoning constrained by this profile and by the item-conditioned evidence in the user prompt. "
+            "Do not turn the learner into an expert tutor, but also do not force an error merely to avoid expert-like behavior.\n\n"
+            "# Stable Learner Profile #\n"
+            f"{stable_profile}"
+        )
+
     cognitive_profile = profile.get("cognitive_profile")
     ability_profile = profile.get("ability_profile")
     profile_text = ""
@@ -20,6 +33,7 @@ def build_profile_system_prompt(profile: dict[str, Any]) -> str:
             "Use ordinary student-level reasoning constrained by this learner's profile. "
             "Do not turn the learner into an expert tutor, but also do not force an error merely to avoid expert-like behavior. "
             "For routine exercises that match the learner's demonstrated proficiency or stable memory, a direct correct first attempt is plausible. "
+            "Use broad ability traits mainly for unfamiliar, difficult, or transfer-heavy situations; do not let a broad low-ability trait override strong current-concept proficiency. "
             "For unstable, weak, unfamiliar, or attention-limited situations, incomplete reasoning and mistakes remain plausible.\n\n"
             + profile_text
         )
@@ -93,8 +107,8 @@ def build_action_prompt(
     )
     if response_format == "answer_only":
         strategy_rule = (
-            "3. Infer this learner's likely first-attempt behavior from the provided profile, "
-            "memories, proficiency, response tendency calibration, non-cognitive state, and visible exercise.\n"
+            "3. Infer this learner's likely first-attempt behavior from the provided learner evidence, "
+            "memories, non-cognitive state, and visible exercise.\n"
         )
         error_rule = (
             "5. Do not intentionally create an error; simulate only a plausible first attempt.\n"
@@ -102,7 +116,7 @@ def build_action_prompt(
         chunks.append(
             "# Answer-only Learner Simulation Protocol #\n"
             "1. Simulate this learner's single first attempt. Do not act as an expert tutor, and do not deliberately optimize for either correctness or incorrectness.\n"
-            "2. Base the submitted answer only on the profile, memories, proficiency, response tendency calibration, non-cognitive state, and visible exercise.\n"
+            "2. Base the submitted answer only on the learner evidence, memories, non-cognitive state, and visible exercise.\n"
             f"{strategy_rule}"
             "4. Generate one attempt only. Do not perform a full teacher-style verification pass; brief ordinary student checking is allowed when the profile and confidence support it.\n"
             f"{error_rule}"
@@ -119,9 +133,9 @@ def build_action_prompt(
         raise ValueError(f"Unsupported response format: {response_format}")
 
     strategy_rule = (
-        "3. Infer this learner's likely first-attempt behavior from the provided profile, memories, proficiency, "
-        "response tendency calibration, non-cognitive state, and visible exercise. Do not silently upgrade the learner into an expert solver, "
-        "but do not downgrade stable demonstrated proficiency into an unnecessary mistake.\n"
+        "3. Infer this learner's likely first-attempt behavior from the provided learner evidence, memories, "
+        "non-cognitive state, and visible exercise. Do not silently upgrade the learner into an expert solver, "
+        "but do not downgrade stable demonstrated evidence into an unnecessary mistake.\n"
     )
     error_rule = (
         "a second expert pass. Do not intentionally insert an error; simulate only a plausible first attempt.\n"
@@ -129,11 +143,11 @@ def build_action_prompt(
     chunks.append(
         "# Four-tier Learner Simulation Protocol #\n"
         "1. Simulate a single first attempt. Do not act as an expert tutor, and do not deliberately optimize for either correctness or incorrectness.\n"
-        "2. Base the attempt only on the learner profile, memories, proficiency, response tendency calibration, non-cognitive state, and the visible exercise. "
+        "2. Base the attempt only on the learner evidence, memories, non-cognitive state, and the visible exercise. "
         "No sampled response label or reference answer is provided; choose the learner's behavior autonomously.\n"
         f"{strategy_rule}"
-        "4. Use a two-stage simulation internally: Stage A decides the learner's latent state from profile, memory, proficiency, "
-        "response tendency calibration, non-cognitive state, and visible exercise; Stage B produces the answer, reasoning, and confidence from that latent state. "
+        "4. Use a two-stage simulation internally: Stage A decides the learner's state from learner evidence, memory, "
+        "non-cognitive state, and visible exercise; Stage B produces the answer, reasoning, and confidence from that latent state. "
         "Stage A must be completed before detailed solving and should not be replaced by a full expert derivation.\n"
         "5. Recent and reinforced records are evidence of the learner's habits. Repeated errors on related concepts should remain plausible; "
         "stable related successes should also remain plausible and should not be erased merely because the prompt asks for learner simulation.\n"
@@ -145,7 +159,7 @@ def build_action_prompt(
         "High confidence can still be wrong under misconception; low confidence can still be correct under guessing. "
         "For careless states, do not recheck even when confidence is medium/high.\n"
         "9. Do not intentionally make every weak learner wrong or every strong learner correct. The learner profile changes tendencies, "
-        "reasoning depth, available process, and confidence, not a deterministic label. High DKT proficiency with stable related memory "
+        "reasoning depth, available process, and confidence, not a deterministic label. Strong knowledge evidence with stable related memory "
         "should usually preserve a successful first attempt unless the visible exercise and learner evidence strongly support a slip. "
         "Low or fragile evidence should lower, but not eliminate, the chance of a correct attempt.\n"
         "10. Do not judge whether the response is correct and do not output a correctness label. An external evaluator will score the submitted answer."
@@ -226,7 +240,9 @@ def _format_ability_profile(ability_profile: dict[str, Any]) -> str:
         f"({ability_profile.get('cross_domain_generalization_value')})\n"
         f"- profile confidence: {ability_profile.get('profile_confidence', 'unknown')}\n"
         "Use this summary to calibrate breadth, depth, difficulty tolerance, and cross-domain transfer. "
-        "Do not treat ability as guaranteed correctness."
+        "It is a broad historical capability signal, not a current-item correctness label. "
+        "For routine same-concept items, current knowledge proficiency and related memory are more specific evidence than broad ability traits. "
+        "Do not treat ability as guaranteed correctness or guaranteed failure."
     )
 
 

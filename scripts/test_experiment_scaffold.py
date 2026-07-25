@@ -52,6 +52,9 @@ def main() -> None:
         "no-cognitive-selection",
         "no-cognitive-profile",
         "no-ability-profile",
+        "no-item-conditioned-ability",
+        "best-full",
+        "best-no-ability-profile",
     }
 
     history_steps = [

@@ -1,0 +1,91 @@
+{
+  "snapshot_date": "2026-07-25",
+  "dataset": "MoocRadar",
+  "cohort_file": "experiments/cohorts/moocradar_90_10_10x10_medium70.json",
+  "protocol": "90 observed history interactions + 10 teacher-forcing target simulations for each of 10 learners",
+  "target_correct_rate": 0.7,
+  "active_llm_model": "deepseek-v4-flash",
+  "current_result_file": "outputs/ablation/moocradar_10x10_medium70_multitask_balanced_state_full.json",
+  "baselines": {
+    "balanced_state_full_current": {
+      "count": 100,
+      "acc": 0.69,
+      "f1": 0.763359,
+      "balanced_acc": 0.67381,
+      "specificity": 0.633333,
+      "mcc": 0.3266,
+      "learner_distribution_error": 0.11,
+      "concept_distribution_error": 0.348926,
+      "runtime": "16m57s",
+      "confusion": {"tn": 19, "fp": 11, "fn": 20, "tp": 50}
+    },
+    "agent4edu_style": {
+      "count": 100,
+      "acc": 0.7,
+      "f1": 0.823529,
+      "balanced_acc": 0.5,
+      "specificity": 0.0,
+      "mcc": null,
+      "learner_distribution_error": 0.3,
+      "concept_distribution_error": 0.312979,
+      "confusion": {"tn": 0, "fp": 30, "fn": 0, "tp": 70}
+    },
+    "random_simulator": {
+      "count": 100,
+      "acc": 0.53,
+      "f1": 0.629921,
+      "balanced_acc": 0.502381,
+      "specificity": 0.433333,
+      "mcc": 0.004408,
+      "learner_distribution_error": 0.19,
+      "concept_distribution_error": 0.425677,
+      "runtime": "0s"
+    },
+    "dkt_predictor": {
+      "count": 100,
+      "acc": 0.74,
+      "f1": 0.839506,
+      "balanced_acc": 0.585714,
+      "specificity": 0.2,
+      "mcc": 0.28957,
+      "learner_distribution_error": 0.22,
+      "concept_distribution_error": 0.221475,
+      "auc": 0.652381,
+      "confusion": {"tn": 6, "fp": 24, "fn": 2, "tp": 68}
+    },
+    "previous_multitask_full": {
+      "count": 100,
+      "acc": 0.64,
+      "f1": 0.723077,
+      "balanced_acc": 0.619048,
+      "specificity": 0.566667,
+      "mcc": 0.222718,
+      "learner_distribution_error": 0.16,
+      "concept_distribution_error": 0.364332,
+      "runtime": "14m37s"
+    },
+    "historical_dedup_profile_full": {
+      "count": 100,
+      "acc": 0.66,
+      "f1": 0.734375,
+      "balanced_acc": 0.652381,
+      "specificity": 0.633333,
+      "mcc": 0.282964,
+      "learner_distribution_error": 0.2,
+      "concept_distribution_error": 0.348646,
+      "runtime": "15m35s"
+    },
+    "simplified_multi_role_full": {
+      "count": 100,
+      "acc": 0.65,
+      "f1": 0.724409,
+      "balanced_acc": 0.645238,
+      "specificity": 0.633333,
+      "mcc": 0.268874,
+      "learner_distribution_error": 0.19,
+      "concept_distribution_error": 0.370355,
+      "runtime": "12m32s"
+    }
+  },
+  "interpretation": "The current balanced-state Full simulator is the strongest recorded LLM simulator on this medium-correct-rate MoocRadar cohort. It trails DKT on ACC/F1 but improves Balanced Accuracy, Specificity, MCC, and LDE by recognizing more negative samples."
+}

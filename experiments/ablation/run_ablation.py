@@ -28,6 +28,12 @@ ABLATIONS = {
     "no-cognitive-selection": {"cognitive_strategy": False},
     "no-cognitive-profile": {"cognitive_profile": False},
     "no-ability-profile": {"ability_profile": False},
+    "no-item-conditioned-ability": {"item_conditioned_ability": False},
+    "best-full": {"item_conditioned_ability": False},
+    "best-no-ability-profile": {
+        "ability_profile": False,
+        "item_conditioned_ability": False,
+    },
 }
 
 
@@ -44,6 +50,15 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=1,
         help="Number of ablation variants to run concurrently.",
+    )
+    parser.add_argument(
+        "--simulator",
+        choices=["full", "multi-role"],
+        default="full",
+        help=(
+            "Simulator used for ablations. Use multi-role for "
+            "no-item-conditioned-ability."
+        ),
     )
     parser.add_argument(
         "--checkpoint-dir",
@@ -71,7 +86,7 @@ def main() -> None:
             **ABLATIONS[variant],
         }
         report = run_experiment(
-            "full",
+            args.simulator,
             args,
             questions,
             history_rows,

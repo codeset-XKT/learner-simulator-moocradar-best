@@ -302,6 +302,7 @@ class RandomLearnerSimulator:
                     "qid": qid,
                     "cid": cid,
                     "kc_routes": qmeta.get("kc_routes", []),
+                    "question_type": qmeta.get("type"),
                     "content": qmeta.get("content"),
                     "content_preview": str(qmeta.get("content", ""))[:80],
                     "simulated_response": response,

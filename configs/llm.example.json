@@ -6,6 +6,8 @@
   "temperature": 0.2,
   "max_tokens": 4096,
   "timeout_seconds": 240,
+  "max_retries": 2,
+  "retry_sleep_seconds": 2,
   "stream": true,
   "extra_body": {
     "enable_thinking": true

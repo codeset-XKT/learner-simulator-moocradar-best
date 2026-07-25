@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 import time
 from typing import Any
 
@@ -12,21 +11,16 @@ from learner_simulator.agent4edu_prompt import (
 from learner_simulator.behavior import non_cognitive_factors
 from learner_simulator.data import clean_sequence
 from learner_simulator.educational_multi_agent_prompt import (
-    build_ability_boundary_evidence,
     build_cognitive_profile_view,
-    build_cognitive_route_prompt,
     build_four_tier_response_record,
     build_response_prompt,
-    fallback_ability_boundary,
-    fallback_cognitive_route,
-    infer_cognitive_route_evidence,
-    parse_cognitive_route,
 )
 from learner_simulator.four_tier import (
     assess_four_tier_response,
     compare_answers,
     parse_answer_only_response,
 )
+from learner_simulator.item_conditioned_ability import build_item_conditioned_ability
 from learner_simulator.llm import call_openai_compatible_chat
 from learner_simulator.simulators.llm_simulator import (
     _build_tendency_calibration,
@@ -40,15 +34,17 @@ from learner_simulator.simulators.random_simulator import (
 
 
 class MultiRoleLearnerSimulator(RandomLearnerSimulator):
-    """Educational multi-agent learner simulator.
+    """Multi-role learner simulator with three explicit research modules.
 
-    The historical command name is still ``multi-role`` for compatibility, but
-    the implementation is now a functional educational-agent pipeline:
+    The command name remains ``multi-role`` for compatibility. Internally the
+    implementation is organized as a compact educational simulation pipeline:
 
-    1. Cognitive Profile Evidence summarizes historical cognitive evidence.
-    2. Ability Boundary Evidence constrains what the learner can plausibly use.
-    3. Cognitive Route Agent selects the first-attempt cognitive path.
-    4. Four-tier Response Module generates and externally scores the answer.
+    1. Learner Profile Encoder: stable learner-level traits from observed
+       history.
+    2. Item-conditioned Evidence Encoder: current-item knowledge alignment,
+       practice alignment, demand fit, and transfer burden.
+    3. Four-tier Response Simulator: learner-level answer generation; external
+       diagnostic scoring is used only for evaluation.
     """
 
     def simulate_sequence(
@@ -68,6 +64,7 @@ class MultiRoleLearnerSimulator(RandomLearnerSimulator):
         include_cognitive_strategy: bool = True,
         include_cognitive_profile: bool = True,
         include_ability_profile: bool = True,
+        include_item_conditioned_ability: bool = True,
         feedback_mode: str = "rollout",
     ) -> dict[str, Any]:
         if response_format not in {"four_tier", "answer_only"}:
@@ -119,6 +116,9 @@ class MultiRoleLearnerSimulator(RandomLearnerSimulator):
             ) if include_proficiency else None
 
             qmeta = questions.get(str(qid), {})
+            qmeta_for_modules = dict(qmeta)
+            qmeta_for_modules.setdefault("qid", qid)
+            qmeta_for_modules.setdefault("cid", cid)
             kc_routes = qmeta.get("kc_routes", [])
             memory_context = (
                 memory.snapshot(cid, kc_routes, mastery_before)
@@ -135,19 +135,24 @@ class MultiRoleLearnerSimulator(RandomLearnerSimulator):
                 if include_proficiency
                 else None
             )
+            cognitive_profile_view = build_cognitive_profile_view(
+                profile_context=profile_context,
+            )
             profile_system_prompt = (
-                build_profile_system_prompt(profile_context)
+                build_profile_system_prompt(
+                    {"learner_profile_evidence": cognitive_profile_view}
+                )
                 if include_profile
                 else (
                     "You are simulating one high school student's first independent attempt. "
                     "Use only the reduced evidence provided by the current module prompts."
                 )
             )
-            cognitive_profile_view = build_cognitive_profile_view(
+            learner_profile_encoder = self._build_learner_profile_encoder(
                 profile_context=profile_context,
-                proficiency=proficiency,
+                memory_context=memory_context,
                 behavior_factors=active_behavior,
-                tendency_calibration=tendency_calibration,
+                cognitive_profile_view=cognitive_profile_view,
             )
 
             step_result: dict[str, Any] = {
@@ -200,7 +205,8 @@ class MultiRoleLearnerSimulator(RandomLearnerSimulator):
                 "kc_routes": kc_routes,
                 "learner_profile": profile_context,
                 "memory_context": memory_context,
-                "cognitive_profile_evidence": cognitive_profile_view,
+                "learner_profile_evidence": cognitive_profile_view,
+                "learner_profile_encoder": learner_profile_encoder,
                 "agent_action": {
                     "attempt": "yes",
                     "identified_concept": true_concept,
@@ -211,78 +217,52 @@ class MultiRoleLearnerSimulator(RandomLearnerSimulator):
                 },
                 "concept_options": concept_options,
                 "enabled_modules": {
-                    "profile": include_profile,
-                    "memory": include_memory,
-                    "proficiency": include_proficiency,
-                    "behavior": include_behavior,
-                    "cognitive_strategy": include_cognitive_strategy,
-                    "cognitive_profile": include_cognitive_profile,
-                    "ability_profile": include_ability_profile
-                    and bool(profile_context.get("ability_profile")),
-                    "four_tier": True,
-                    "cognitive_profile_evidence": True,
-                    "ability_boundary_evidence": include_ability_profile,
-                    "cognitive_route_agent": include_cognitive_strategy,
-                    "four_tier_response_module": True,
+                    "learner_profile_encoder": include_profile,
+                    "item_conditioned_evidence_encoder": include_item_conditioned_ability,
+                    "four_tier_response_simulation": True,
+                    "details": {
+                        "profile": include_profile,
+                        "memory": include_memory,
+                        "proficiency": include_proficiency,
+                        "behavior": include_behavior,
+                        "cognitive_profile": include_cognitive_profile,
+                        "ability_profile": include_ability_profile
+                        and bool(profile_context.get("ability_profile")),
+                        "item_conditioned_evidence": include_item_conditioned_ability,
+                        "four_tier": True,
+                    },
                 },
             }
 
             if call_llm:
                 if llm_config is None:
                     raise ValueError("llm_config is required when call_llm=True")
-                ability_boundary = self._build_ability_boundary_evidence(
-                    question=qmeta,
-                    cognitive_profile=cognitive_profile_view,
-                    memory_context=memory_context,
-                    proficiency=proficiency,
-                    enabled=include_ability_profile,
-                )
-                ability_boundary_view = self._public_agent_view(ability_boundary)
-                route_evidence = infer_cognitive_route_evidence(
-                    question=qmeta,
-                    cognitive_profile=cognitive_profile_view,
-                    ability_boundary=ability_boundary_view,
-                    proficiency=proficiency,
-                    behavior_factors=active_behavior,
-                    tendency_calibration=tendency_calibration,
-                )
-                cognitive_route = self._call_cognitive_route_agent(
-                    llm_config=llm_config,
-                    question=qmeta,
-                    cognitive_profile=cognitive_profile_view,
-                    ability_boundary=ability_boundary_view,
-                    proficiency=proficiency,
-                    behavior_factors=active_behavior,
-                    tendency_calibration=tendency_calibration,
-                    route_evidence=route_evidence,
-                    system_prompt=profile_system_prompt,
-                    enabled=include_cognitive_strategy,
-                )
-                cognitive_route_view = (
-                    self._public_agent_view(cognitive_route)
-                    if cognitive_route is not None
-                    else None
-                )
-                latent_state = self._build_latent_learner_state(
-                    components=components,
-                    tendency_calibration=tendency_calibration,
-                    behavior_factors=active_behavior,
-                    ability_boundary=ability_boundary_view,
-                    cognitive_route=cognitive_route_view,
-                    route_evidence=route_evidence,
+                item_conditioned_ability = (
+                    build_item_conditioned_ability(
+                        question=qmeta_for_modules,
+                        profile_context=profile_context,
+                        memory_context=memory_context,
+                        proficiency=proficiency,
+                        behavior_factors=active_behavior,
+                        tendency_calibration=tendency_calibration,
+                    )
+                    if include_item_conditioned_ability
+                    else {
+                        "module": "item_conditioned_ability",
+                        "ablated": True,
+                        "response_guidance": (
+                            "Item-conditioned ability evidence is removed for this ablation."
+                        ),
+                    }
                 )
                 response_prompt = build_response_prompt(
                     question=qmeta,
                     short_memory=memory_context.get("short_memory", []),
                     long_memory=memory_context.get("long_memory", {}),
                     concept_options=concept_options,
-                    proficiency=proficiency,
                     behavior_factors=active_behavior,
-                    tendency_calibration=tendency_calibration,
                     cognitive_profile=cognitive_profile_view,
-                    ability_boundary=ability_boundary_view,
-                    cognitive_route=cognitive_route_view,
-                    latent_state=latent_state,
+                    item_conditioned_ability=item_conditioned_ability,
                     response_format=response_format,
                 )
                 output_contract = (
@@ -292,20 +272,22 @@ class MultiRoleLearnerSimulator(RandomLearnerSimulator):
                 )
                 response_system_prompt = (
                     f"{profile_system_prompt}\n\n"
-                    "You are the Response Agent. Follow the Cognitive Profile Agent, "
-                    "Ability Boundary Evidence, and Cognitive Route Agent outputs. "
+                    "You are the Response Agent. Follow the learner evidence profile, "
+                    "item-conditioned ability profile, and four-tier output contract. "
                     f"Return only the required {output_contract}."
                 )
                 if include_prompt:
-                    step_result["cognitive_route_prompt"] = (
-                        cognitive_route or {}
-                    ).get("prompt")
                     step_result["response_agent_prompt"] = response_prompt
                     step_result["response_agent_system_prompt"] = response_system_prompt
-                step_result["ability_boundary_evidence"] = ability_boundary
-                step_result["cognitive_route_evidence"] = route_evidence
-                step_result["cognitive_route_agent"] = cognitive_route
-                step_result["latent_learner_state"] = latent_state
+                step_result["item_conditioned_ability"] = item_conditioned_ability
+                step_result["simulation_tasks"] = self._build_simulation_tasks(
+                    true_concept=true_concept,
+                    concept_options=concept_options,
+                    learner_profile_encoder=learner_profile_encoder,
+                    item_conditioned_ability=item_conditioned_ability,
+                    action=None,
+                    four_tier=None,
+                )
                 try:
                     response_start = time.perf_counter()
                     raw = call_openai_compatible_chat(
@@ -352,10 +334,8 @@ class MultiRoleLearnerSimulator(RandomLearnerSimulator):
                             llm_correct=final_correct,
                             answer_confidence=answer_confidence,
                             components=components,
-                            cognitive_route=cognitive_route_view,
-                            ability_boundary=ability_boundary_view,
                             tendency_calibration=tendency_calibration,
-                            latent_state=latent_state,
+                            item_conditioned_ability=item_conditioned_ability,
                         )
                         action["simulated_correct"] = final_correct
                         action["confidence"] = answer_confidence
@@ -369,14 +349,23 @@ class MultiRoleLearnerSimulator(RandomLearnerSimulator):
                         step_result["dkt_conditioning"] = dkt_conditioning
                     step_result["agent_action"] = action
                     step_result["llm_parsed_action"] = action
+                    step_result["simulation_tasks"] = self._build_simulation_tasks(
+                        true_concept=true_concept,
+                        concept_options=concept_options,
+                        learner_profile_encoder=learner_profile_encoder,
+                        item_conditioned_ability=item_conditioned_ability,
+                        action=action,
+                        four_tier=four_tier,
+                    )
                     if four_tier is not None:
                         step_result["four_tier_assessment"] = four_tier
-                        step_result["four_tier_response_module"] = build_four_tier_response_record(
+                        four_tier_record = build_four_tier_response_record(
                             action=action,
                             four_tier=four_tier,
-                            cognitive_route=cognitive_route_view,
-                            ability_boundary=ability_boundary_view,
+                            item_conditioned_ability=item_conditioned_ability,
                         )
+                        step_result["four_tier_response_module"] = four_tier_record
+                        step_result["four_tier_response_simulation"] = four_tier_record
                     step_result["llm_result"] = raw
                 except Exception as exc:
                     step_result["llm_error"] = f"{exc.__class__.__name__}: {exc}"
@@ -393,7 +382,20 @@ class MultiRoleLearnerSimulator(RandomLearnerSimulator):
                 else int(step_result["simulated_response"])
             )
             step_result["feedback_response"] = feedback_response
+            mastery_for_update = state.get_mastery(cid, 0.5)
             state.update(cid, feedback_response, learning_rate=self.learning_rate)
+            updated_mastery = state.get_mastery(cid, 0.5)
+            step_result["state_evolution"] = self._build_state_evolution_task(
+                cid=cid,
+                feedback_response=feedback_response,
+                feedback_mode=feedback_mode,
+                mastery_before=mastery_for_update,
+                mastery_after=updated_mastery,
+            )
+            if isinstance(step_result.get("simulation_tasks"), dict):
+                step_result["simulation_tasks"]["task4_state_evolution"] = (
+                    step_result["state_evolution"]
+                )
             memory_record = dict(step_result)
             if feedback_mode == "teacher-forcing":
                 memory_record["source"] = "teacher_forced_feedback"
@@ -411,206 +413,90 @@ class MultiRoleLearnerSimulator(RandomLearnerSimulator):
         summary["feedback_mode"] = feedback_mode
         return summary
 
-    def _build_ability_boundary_evidence(
-        self,
-        question: dict[str, Any],
-        cognitive_profile: dict[str, Any],
-        memory_context: dict[str, Any],
-        proficiency: dict[str, Any] | None,
-        enabled: bool,
-    ) -> dict[str, Any]:
-        if not enabled:
-            boundary = fallback_ability_boundary(cognitive_profile, proficiency)
-            boundary["ablated"] = True
-            return boundary
-        boundary = build_ability_boundary_evidence(
-            question=question,
-            cognitive_profile=cognitive_profile,
-            memory_context=memory_context,
-            proficiency=proficiency,
-        )
-        boundary["elapsed_seconds"] = 0.0
-        return boundary
-
-    def _call_cognitive_route_agent(
-        self,
-        llm_config: dict[str, Any],
-        question: dict[str, Any],
-        cognitive_profile: dict[str, Any],
-        ability_boundary: dict[str, Any],
-        proficiency: dict[str, Any] | None,
-        behavior_factors: dict[str, float] | None,
-        tendency_calibration: dict[str, Any] | None,
-        route_evidence: dict[str, Any],
-        system_prompt: str,
-        enabled: bool,
-    ) -> dict[str, Any] | None:
-        if not enabled:
-            return None
-        prompt = build_cognitive_route_prompt(
-            question=question,
-            cognitive_profile=cognitive_profile,
-            ability_boundary=ability_boundary,
-            proficiency=proficiency,
-            behavior_factors=behavior_factors,
-            tendency_calibration=tendency_calibration,
-            route_evidence=route_evidence,
-        )
-        started = time.perf_counter()
-        try:
-            raw = call_openai_compatible_chat(
-                llm_config,
-                prompt,
-                system_prompt=(
-                    f"{system_prompt}\n\n"
-                    "You are the Cognitive Route Agent. Select the route only; do not solve."
-                ),
-            )
-            parsed = parse_cognitive_route(raw)
-            if parsed is None:
-                raise ValueError("Cognitive Route Agent output did not match contract")
-            parsed["elapsed_seconds"] = round(time.perf_counter() - started, 3)
-            parsed["prompt"] = prompt
-            parsed["route_evidence"] = route_evidence
-            return self._apply_route_guard(parsed, route_evidence)
-        except Exception as exc:
-            route = fallback_cognitive_route(
-                cognitive_profile=cognitive_profile,
-                ability_boundary=ability_boundary,
-                proficiency=proficiency,
-                behavior_factors=behavior_factors,
-                tendency_calibration=tendency_calibration,
-                route_evidence=route_evidence,
-            )
-            route["error"] = f"{exc.__class__.__name__}: {exc}"
-            route["elapsed_seconds"] = round(time.perf_counter() - started, 3)
-            route["prompt"] = prompt
-            return self._apply_route_guard(route, route_evidence)
-
     @staticmethod
-    def _public_agent_view(agent_output: dict[str, Any] | None) -> dict[str, Any]:
-        if not agent_output:
-            return {}
-        hidden = {"prompt", "raw"}
+    def _build_simulation_tasks(
+        true_concept: str,
+        concept_options: list[str],
+        learner_profile_encoder: dict[str, Any],
+        item_conditioned_ability: dict[str, Any],
+        action: dict[str, Any] | None,
+        four_tier: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        selected_concept = action.get("identified_concept") if action else None
         return {
-            key: value
-            for key, value in agent_output.items()
-            if key not in hidden and not key.endswith("_prompt")
+            "task1_learner_state_inference": {
+                "objective": "infer stable learner state from observed history",
+                "output": learner_profile_encoder,
+                "evaluation": "indirect_profile_and_history_consistency",
+            },
+            "task2_item_conditioned_activation": {
+                "objective": "infer how the current item activates learner knowledge and ability",
+                "true_concept": true_concept,
+                "concept_options": concept_options,
+                "selected_concept": selected_concept,
+                "concept_match": (
+                    _concept_match(selected_concept, true_concept)
+                    if selected_concept is not None
+                    else None
+                ),
+                "item_conditioned_ability": item_conditioned_ability,
+                "kt_decision_anchor": item_conditioned_ability.get("kt_decision_anchor"),
+                "evaluation": "concept_label_and_kt_anchor_consistency",
+            },
+            "task3_four_tier_response_generation": {
+                "objective": "generate learner answer, reasoning, and metacognitive confidence",
+                "attempt": action.get("attempt") if action else None,
+                "student_answer": action.get("student_answer") if action else None,
+                "student_reasoning": action.get("student_reasoning") if action else None,
+                "answer_confidence": action.get("answer_confidence") if action else None,
+                "reasoning_confidence": (
+                    action.get("reasoning_confidence") if action else None
+                ),
+                "answer_correct": four_tier.get("answer_correct") if four_tier else None,
+                "diagnosis": four_tier.get("diagnosis") if four_tier else None,
+                "evaluation": "external_answer_scoring_and_confidence_calibration",
+            },
         }
 
     @staticmethod
-    def _apply_route_guard(
-        route: dict[str, Any],
-        route_evidence: dict[str, Any],
+    def _build_state_evolution_task(
+        cid: int,
+        feedback_response: int,
+        feedback_mode: str,
+        mastery_before: float,
+        mastery_after: float,
     ) -> dict[str, Any]:
-        if route.get("cognitive_route") != "mastery_retrieval":
-            return route
-        if route_evidence.get("mastery_retrieval_allowed") is not False:
-            return route
-        suggested = route_evidence.get("suggested_route")
-        if suggested not in {
-            "partial_reasoning",
-            "misconception_transfer",
-            "careless_execution",
-            "uncertain_guessing",
-        }:
-            suggested = "partial_reasoning"
-        adjusted = dict(route)
-        adjusted["original_cognitive_route"] = "mastery_retrieval"
-        adjusted["cognitive_route"] = suggested
-        adjusted["route_guard_override"] = True
-        adjusted["route_guard_reason"] = (
-            "Mastery retrieval was disallowed by cognitive route evidence."
-        )
-        adjusted["expected_fluency"] = (
-            "hesitant"
-            if suggested == "uncertain_guessing"
-            else "uneven"
-            if suggested in {"misconception_transfer", "careless_execution"}
-            else "constrained"
-        )
-        adjusted["expected_verification_depth"] = "none" if suggested != "mastery_retrieval" else "light"
-        return adjusted
+        return {
+            "objective": "update learner state after the current interaction",
+            "cid": cid,
+            "feedback_mode": feedback_mode,
+            "feedback_response": feedback_response,
+            "mastery_before": round(float(mastery_before), 6),
+            "mastery_after": round(float(mastery_after), 6),
+            "mastery_delta": round(float(mastery_after) - float(mastery_before), 6),
+            "evaluation": "trajectory_distribution_and_future_behavior_consistency",
+        }
 
     @staticmethod
-    def _build_latent_learner_state(
-        components: dict[str, Any],
-        tendency_calibration: dict[str, Any] | None,
+    def _build_learner_profile_encoder(
+        profile_context: dict[str, Any],
+        memory_context: dict[str, Any],
         behavior_factors: dict[str, float] | None,
-        ability_boundary: dict[str, Any],
-        cognitive_route: dict[str, Any] | None,
-        route_evidence: dict[str, Any],
+        cognitive_profile_view: dict[str, Any],
     ) -> dict[str, Any]:
-        mastery = _safe_float(components.get("mastery"), default=0.5)
-        history_rate = _safe_float((tendency_calibration or {}).get("history_rate"), default=0.5)
-        item_rate = _safe_float(components.get("item_rate"), default=0.5)
-        memory_support = ability_boundary.get("memory_support") or {}
-        related_rate = _safe_float(memory_support.get("related_correct_rate"), default=0.5)
-        identical_correct = int(memory_support.get("identical_correct_count", 0) or 0)
-        carelessness = _safe_float((behavior_factors or {}).get("carelessness"), default=0.1)
-        fatigue = _safe_float((behavior_factors or {}).get("fatigue"), default=0.1)
-        guessing = _safe_float((behavior_factors or {}).get("guessing"), default=0.1)
-        route = str((cognitive_route or {}).get("cognitive_route") or route_evidence.get("suggested_route") or "partial_reasoning")
-        boundary_risk = str(ability_boundary.get("boundary_risk", "medium"))
-        item_demand = str(ability_boundary.get("item_demand", "medium"))
-
-        base_probability = min(
-            0.95,
-            max(
-                0.05,
-                0.55 * mastery + 0.20 * history_rate + 0.15 * item_rate + 0.10 * related_rate,
-            ),
-        )
-        score = _logit(base_probability)
-        score += 0.45 * (history_rate - 0.5)
-        score += 0.35 * (related_rate - 0.5)
-        score += 0.12 * min(2, identical_correct)
-        score -= 0.70 * carelessness
-        score -= 0.55 * fatigue
-        score -= 0.45 * guessing
-        score += {
-            "mastery_retrieval": 0.30,
-            "partial_reasoning": 0.0,
-            "misconception_transfer": -0.55,
-            "careless_execution": -0.30,
-            "uncertain_guessing": -0.75,
-        }.get(route, 0.0)
-        score += {"low": 0.12, "medium": 0.0, "high": -0.28}.get(item_demand, 0.0)
-        score += {"low": 0.10, "medium": -0.08, "high": -0.35}.get(boundary_risk, -0.08)
-        anchor_probability = _sigmoid(score)
-
-        access_score = 0.60 * mastery + 0.20 * history_rate + 0.20 * related_rate
-        if route == "uncertain_guessing":
-            access_score -= 0.15
-        elif route == "misconception_transfer":
-            access_score -= 0.08
-        knowledge_access = _three_band(access_score, low=0.45, high=0.72)
-
-        execution_score = 1.0 - (0.50 * carelessness + 0.25 * fatigue + 0.25 * guessing)
-        execution_score += {"low": 0.08, "medium": 0.0, "high": -0.12}.get(boundary_risk, 0.0)
-        execution_quality = (
-            "stable" if execution_score >= 0.72
-            else "variable" if execution_score >= 0.48
-            else "fragile"
-        )
-        confidence_band = _three_band(anchor_probability, low=0.42, high=0.72)
-
+        long_memory = memory_context.get("long_memory") or {}
         return {
-            "module": "latent_learner_state",
-            "p_correct_anchor": round(anchor_probability, 3),
-            "knowledge_access": knowledge_access,
-            "execution_quality": execution_quality,
-            "confidence_band": confidence_band,
-            "route": route,
-            "expected_fluency": (cognitive_route or {}).get("expected_fluency"),
-            "expected_verification_depth": (cognitive_route or {}).get("expected_verification_depth"),
-            "boundary_risk": boundary_risk,
-            "item_demand": item_demand,
-            "anchor_rationale": (
-                f"anchor combines mastery={mastery:.2f}, history={history_rate:.2f}, "
-                f"memory={related_rate:.2f}, route={route}, and execution risks "
-                f"(carelessness={carelessness:.2f}, fatigue={fatigue:.2f}, guessing={guessing:.2f})."
-            ),
+            "module": "learner_profile_encoder",
+            "stable_profile": cognitive_profile_view,
+            "history_exposure": profile_context.get("history_summary"),
+            "memory_summary": {
+                "short_memory_count": len(memory_context.get("short_memory", [])),
+                "reinforced_memory_count": len(
+                    long_memory.get("significant_facts", [])
+                ),
+                "current_concept_memory": long_memory.get("current_concept"),
+            },
+            "non_cognitive_state": behavior_factors,
         }
 
     @staticmethod
@@ -618,20 +504,16 @@ class MultiRoleLearnerSimulator(RandomLearnerSimulator):
         llm_correct: int,
         answer_confidence: float,
         components: dict[str, Any],
-        cognitive_route: dict[str, Any] | None,
-        ability_boundary: dict[str, Any],
         tendency_calibration: dict[str, Any] | None,
-        latent_state: dict[str, Any] | None,
+        item_conditioned_ability: dict[str, Any] | None,
     ) -> dict[str, Any]:
         """Record LLM-vs-DKT alignment without changing the LLM outcome."""
 
         mastery = _safe_float(components.get("mastery"), default=0.5)
         dkt_predicted = int(mastery >= 0.5)
-        route = str((cognitive_route or {}).get("cognitive_route", "unknown"))
-        boundary_risk = str(ability_boundary.get("boundary_risk", "medium"))
-        item_demand = str(ability_boundary.get("item_demand", "medium"))
         tendency_band = str((tendency_calibration or {}).get("band", "mixed"))
         history_level = str((tendency_calibration or {}).get("history_level", "unknown"))
+        activation = item_conditioned_ability or {}
         confidence = min(1.0, max(0.0, _safe_float(answer_confidence, default=0.5)))
 
         conflict_direction = "aligned"
@@ -644,7 +526,7 @@ class MultiRoleLearnerSimulator(RandomLearnerSimulator):
         strong_conflict = (
             conflict_direction == "llm_more_pessimistic_than_dkt"
             and mastery >= 0.70
-            and boundary_risk != "high"
+            and activation.get("activation_level") != "limited"
             and confidence < 0.75
         ) or (
             conflict_direction == "llm_more_optimistic_than_dkt"
@@ -665,14 +547,17 @@ class MultiRoleLearnerSimulator(RandomLearnerSimulator):
             "conflict_direction": conflict_direction,
             "strong_conflict": strong_conflict,
             "answer_confidence": round(confidence, 6),
-            "cognitive_route": route,
-            "boundary_risk": boundary_risk,
-            "item_demand": item_demand,
+            "item_conditioned_ability": {
+                "activation_level": activation.get("activation_level"),
+                "ability_expression": activation.get("ability_expression"),
+                "knowledge_alignment": activation.get("knowledge_alignment"),
+                "practice_alignment": activation.get("practice_alignment"),
+                "demand_alignment": activation.get("demand_alignment"),
+                "memory_support": activation.get("memory_support"),
+                "transfer_burden": activation.get("transfer_burden"),
+            },
             "tendency_band": tendency_band,
             "history_level": history_level,
-            "p_correct_anchor": _safe_float((latent_state or {}).get("p_correct_anchor"), default=0.5),
-            "knowledge_access": str((latent_state or {}).get("knowledge_access", "unknown")),
-            "execution_quality": str((latent_state or {}).get("execution_quality", "unknown")),
         }
 
     def _dkt_raw_probability(self, uid: str, cid: int) -> float | None:
@@ -695,21 +580,12 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
-def _sigmoid(value: float) -> float:
-    return 1.0 / (1.0 + math.exp(-value))
-
-
-def _logit(probability: float) -> float:
-    clipped = min(0.999, max(0.001, probability))
-    return math.log(clipped / (1.0 - clipped))
-
-
-def _three_band(value: float, low: float, high: float) -> str:
-    if value >= high:
-        return "high"
-    if value >= low:
-        return "medium"
-    return "low"
+def _concept_match(selected: Any, true_concept: str) -> bool:
+    selected_text = str(selected or "").strip()
+    true_text = str(true_concept or "").strip()
+    if not selected_text or not true_text:
+        return False
+    return selected_text == true_text
 
 
 def _visible_probability_components(

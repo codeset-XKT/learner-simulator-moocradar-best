@@ -49,6 +49,7 @@ class LLMLearnerSimulator(RandomLearnerSimulator):
         include_cognitive_strategy: bool = True,
         include_cognitive_profile: bool = True,
         include_ability_profile: bool = True,
+        feedback_mode: str = "rollout",
     ) -> dict[str, Any]:
         uid = row["uid"]
         state, memory = self.initialize_from_history(
@@ -75,10 +76,7 @@ class LLMLearnerSimulator(RandomLearnerSimulator):
             behavior_factors = non_cognitive_factors(profile_context, int(step.get("position") or 0), self.random)
             mastery_before = components["mastery"]
             fallback_response = int(mastery_before >= 0.5)
-            tendency_calibration = _build_tendency_calibration(
-                profile_context,
-                components,
-            )
+            tendency_calibration = None
 
             qmeta = questions.get(str(qid), {})
             kc_routes = qmeta.get("kc_routes", [])

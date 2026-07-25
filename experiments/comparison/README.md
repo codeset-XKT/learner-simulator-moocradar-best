@@ -3,7 +3,8 @@
 All baselines use the same unique learners and the fixed 90-history + 10-target protocol.
 
 The main entry point is `run_comparison.py`. Use `multi-role` for the current
-four-module educational simulator.
+three-stage educational simulator: Learner Profile Encoder, Item-conditioned
+Evidence Encoder, and Four-tier Response Simulator.
 
 Run a fixed-cohort comparison:
 
@@ -19,7 +20,7 @@ python experiments/comparison/run_comparison.py `
 
 The comparison contains:
 
-- `multi-role`: current four-module educational learner simulator, with
+- `multi-role`: current three-stage educational learner simulator, with
   external answer scoring.
 - `full`: older LLMLearnerSimulator branch, mainly for locked historical
   baselines.

@@ -293,6 +293,12 @@ def run_experiment(
                 enable_reflection=modules.get("reflection", True),
             )
         else:
+            extra_module_kwargs = {}
+            if name == "multi-role":
+                extra_module_kwargs["include_item_conditioned_ability"] = modules.get(
+                    "item_conditioned_ability",
+                    True,
+                )
             simulation = simulator.simulate_sequence(
                 row,
                 questions=questions,
@@ -312,6 +318,7 @@ def run_experiment(
                 include_cognitive_profile=modules.get("cognitive_profile", True),
                 include_ability_profile=modules.get("ability_profile", True),
                 feedback_mode=args.feedback_mode,
+                **extra_module_kwargs,
             )
         simulations.append(simulation)
 
@@ -381,9 +388,24 @@ def metric_view(report: dict[str, Any]) -> dict[str, Any]:
         "concept_distribution_error": metrics.get("concept_distribution_error"),
         "mastery_response_monotonicity": mastery_response.get("score"),
         "mastery_confidence_monotonicity": mastery_confidence.get("score"),
+        "four_tier_answer_confidence_ece": metrics.get(
+            "four_tier_answer_confidence_ece"
+        ),
         "prob_acc": metrics.get("prob_acc_at_threshold"),
         "prob_f1": metrics.get("prob_f1_at_threshold"),
         "llm_valid_count": metrics.get("llm_response_count"),
+        "task2_concept_accuracy": metrics.get("task2_concept_accuracy"),
+        "task2_kt_anchor_acc": metrics.get("task2_kt_anchor_acc"),
+        "task2_kt_anchor_balanced_accuracy": metrics.get(
+            "task2_kt_anchor_balanced_accuracy"
+        ),
+        "task3_response_acc": metrics.get("task3_response_acc"),
+        "task3_response_balanced_accuracy": metrics.get(
+            "task3_response_balanced_accuracy"
+        ),
+        "task4_mean_abs_mastery_delta": metrics.get(
+            "task4_mean_abs_mastery_delta"
+        ),
         "runtime": report["runtime"]["total_human"],
     }
 
