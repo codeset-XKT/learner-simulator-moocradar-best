@@ -1,7 +1,7 @@
 # Results Summary
 
 This file records the main fixed-cohort results that should be used for project
-handoff and method comparison. Snapshot date: 2026-07-25.
+handoff and method comparison. Snapshot date: 2026-07-26.
 
 ## Reading The Metrics
 
@@ -43,6 +43,11 @@ True target correct rate: 89.00%.
 | Version | ACC | F1 | Balanced Acc | Specificity | MCC | LDE | CDE | Predicted Correct Rate | Confusion |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---|
 | Historical Full + ability summary | 75.00% | 84.28% | 74.00% | 72.73% | 0.328 | 0.190 | 0.398 | 70.00% | TP67 / TN8 / FP3 / FN22 |
+| Balanced-state light Full (locked 2026-07-26) | 75.00% | 84.47% | 70.02% | 63.64% | 0.279 | 0.210 | 0.418 | 72.00% | TP68 / TN7 / FP4 / FN21 |
+| DKT reference | 93.00% | 96.17% | 72.17% | 45.45% | 0.584 | — | — | 94.00% | TP88 / TN5 / FP6 / FN1 |
+| p_correct >= 0.5 | 92.00% | 95.65% | 67.62% | 36.36% | 0.506 | — | — | 95.00% | TP88 / TN4 / FP7 / FN1 |
+| Agent4Edu-style | 89.00% | 94.18% | 50.00% | 0.00% | null | 0.110 | 0.220 | 100.00% | TP89 / TN0 / FP11 / FN0 |
+| Random simulator | 75.00% | 85.03% | 58.07% | 36.36% | 0.122 | 0.190 | 0.228 | 78.00% | not recorded here |
 | Current multi-role Ability Evidence | 78.00% | 86.59% | 71.71% | 63.64% | 0.314 | 0.160 | 0.398 | 75.00% | TP71 / TN7 / FP4 / FN18 |
 | Route Evidence transition | 74.00% | 83.95% | 65.48% | 54.55% | 0.218 | 0.220 | 0.424 | 73.00% | not recorded here |
 | Earlier educational multi-agent | 70.00% | 80.77% | 67.21% | 63.64% | 0.229 | 0.260 | 0.429 | 67.00% | not recorded here |
@@ -51,16 +56,22 @@ True target correct rate: 89.00%.
 Main files:
 
 - `outputs/ablation/moocradar_10x10_ability_summary_no_irt_full_no_ability_profile.json`
+- `locked_results/moocradar_10x10_normal_balanced_state_light_full.json`
+- `locked_results/moocradar_10x10_normal_agent4edu.json`
+- `locked_results/moocradar_10x10_normal_random.json`
 - `outputs/comparison/moocradar_10x10_educational_multi_agent_ability_evidence_teacher_forcing.json`
 - `outputs/comparison/moocradar_10x10_educational_multi_agent_route_evidence_teacher_forcing.json`
 - `outputs/comparison/moocradar_10x10_educational_multi_agent_teacher_forcing.json`
 - `outputs/comparison/moocradar_10x10_multi_role_lpr_teacher_forcing.json`
 
 Interpretation: the historical ability-summary run remains the best MoocRadar
-result for Balanced Accuracy, Specificity, and MCC. The current multi-role
-Ability Evidence version has better ACC, F1, and LDE, so it is not dominated;
-it is weaker mainly because it loses one true negative compared with the
-historical run.
+result for Balanced Accuracy, Specificity, and MCC among the locked LLM
+simulators. The Balanced-state light lock confirms that the active Full branch
+still separates negative samples far better than Agent4Edu-style on this
+positive-skewed batch: Agent4Edu-style matches the all-correct baseline with
+Specificity 0.00%, while Balanced-state light Full reaches Specificity 63.64%.
+DKT remains the strongest pure predictor and should be reported as a reference,
+not as a simulator replacement.
 
 ## XES3G5M 10x10
 

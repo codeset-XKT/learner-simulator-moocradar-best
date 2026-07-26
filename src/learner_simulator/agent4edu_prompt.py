@@ -220,9 +220,9 @@ def _format_cognitive_profile(cognitive_profile: dict[str, Any]) -> str:
         f"({transfer.get('same_parent_transfer_success')}), transfer_fragility="
         f"{transfer.get('transfer_fragility_level', 'unknown')} ({transfer.get('transfer_fragility')})\n"
         "Use this computed cognitive profile to constrain attention stability, error tendencies, confidence, "
-        "and transfer behavior during first-attempt simulation. Do not treat a generally successful learner as correct "
-        "by default when recent performance, repeated errors, confusion, or fragile transfer indicate instability. "
-        "Preserve plausible mistakes instead of repairing the answer with expert reasoning."
+        "and transfer behavior during first-attempt simulation. Treat affective and error fields as broad tendencies, "
+        "not automatic error triggers. Preserve plausible mistakes when recent performance, repeated errors, confusion, "
+        "or fragile transfer indicate instability; preserve plausible success when current proficiency and stable memory support it."
     )
 
 
