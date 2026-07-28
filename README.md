@@ -2,16 +2,19 @@
 
 This project studies LLM-based learner simulation under a fixed knowledge
 tracing style protocol. The active experiments compare this project's simulator
-against Agent4Edu-style and random baselines on fixed cohorts.
+against Agent4Edu-style and probability-sampling baselines on fixed cohorts.
 
 ## Current Method
 
 The current research method is exposed as the `multi-role` baseline name for
 backward compatibility. Internally it is now a compact three-stage educational
-simulation pipeline:
+simulation evidence pipeline:
 
 ```text
 Learner Profile Encoder
+NCDM Knowledge State Encoder
+IRT Ability-Difficulty Evidence
+Learning Tool State Encoder
 Item-conditioned Evidence Encoder
 Four-tier Response Simulator
 ```
@@ -19,9 +22,30 @@ Four-tier Response Simulator
 - Learner Profile Encoder: stable learner-level traits derived from observed
   history, including general performance, stability, error tendency,
   affective-state proxies, transfer traits, and broad ability traits.
+- NCDM Knowledge State Encoder: DNeuralCDM/NCDM proficiency is the required
+  knowledge-state source for the paper-oriented `multi-role` Full method.
+  Dynamic mastery is retained only for baselines, fallback ablations, and
+  internal diagnostics.
+- IRT Ability-Difficulty Evidence: a Rasch/1PL module estimates learner ability
+  `theta`, item difficulty `beta`, and their relative challenge from observed
+  history. It is exposed to the LLM as ability-versus-difficulty evidence, not
+  as concept mastery, not as `p_correct`, and not as a sampled correctness
+  label.
+- Learning Tool State Encoder: an Agent4Edu-style tool-conditioning layer. The
+  current NCDM concept state is treated as the primary knowledge-state tool,
+  while IRT relative challenge and observed related memory act as secondary
+  modifiers of confidence, effort, and reasoning depth. Unlike Agent4Edu's
+  Task4 Yes/No prediction, this layer conditions Four-tier response generation:
+  answer, answer confidence, reasoning, and reasoning confidence.
 - Item-conditioned Evidence Encoder: interaction-level evidence derived from
-  the current item, DKT state, related practice memory, item demand, and
-  transfer burden.
+  the current item, NCDM proficiency state, IRT relative challenge, related
+  practice memory, item demand, and transfer burden.
+- Historical Reflective Calibration: the observed history is internally split
+  into 80 prefix interactions and 10 replay interactions under the default
+  90-history protocol. Replay uses the NCDM state after the prefix and never
+  uses target labels.
+- NCDM State Evolution: Task4 updates the NCDM-initialized runtime knowledge
+  state after each target interaction using the selected feedback mode.
 - Four-tier Response Simulator: LLM generation of `StudentAnswer`,
   `AnswerConfidence`, `StudentReasoning`, and `ReasoningConfidence`; correctness
   is scored externally against question metadata for evaluation only.
@@ -35,7 +59,7 @@ explicitly says otherwise.
 All formal experiments use the Agent4Edu-style fixed-history protocol:
 
 ```text
-90 observed interactions -> profile / memory / mastery initialization
+90 observed interactions -> profile / memory / NCDM state initialization
 10 target interactions   -> sequential learner simulation and evaluation
 ```
 
@@ -47,6 +71,9 @@ Rules:
 - Score `StudentAnswer` externally; do not let the LLM self-label correctness.
 - Do not feed `p_correct`, sampled labels, reference answers, or reference
   analyses into this project's full or multi-role prompts.
+- The paper-oriented `multi-role` Full run requires
+  `--dneuralcdm-proficiency`. Runs without NCDM should be reported as
+  dynamic-only/proficiency ablations rather than Full.
 - Agent4Edu reproduction may expose reference answers and analyses because its
   official action prompt does so; reports mark that leakage explicitly.
 
@@ -125,7 +152,10 @@ Current development config at the time of this cleanup:
 
 ## Running Comparisons
 
-Run current multi-role, Agent4Edu, and random baselines on a fixed cohort:
+Run current multi-role, Agent4Edu, and probability-sampling baselines on a fixed
+cohort. The command-line name is still `random` for backward compatibility, but
+paper tables should call it `Probability-sampling Baseline` because it samples
+from an estimated `p_correct`, not from a uniform 0.5 coin flip:
 
 ```powershell
 python experiments\comparison\run_comparison.py `
@@ -159,7 +189,7 @@ configuration, and external scoring:
 ```powershell
 python experiments\ablation\run_ablation.py `
   --cohort-file experiments\cohorts\moocradar_90_10_10x10.json `
-  --variants full,no-profile,no-memory,no-proficiency,no-four-tier,no-cognitive-selection,no-cognitive-profile,no-ability-profile `
+  --variants full,no-profile,no-memory,no-proficiency,no-four-tier,no-cognitive-selection,no-cognitive-profile,no-ability-profile,no-irt-evidence,no-learning-tool-state `
   --parallel-variants 2 `
   --progress `
   --save-steps
@@ -175,6 +205,7 @@ configs/llm.example.json
 experiments/common.py
 experiments/comparison/run_comparison.py
 experiments/ablation/run_ablation.py
+experiments/evaluation/summarize_results.py
 scripts/prepare_foundationalassist.py
 scripts/prepare_junyi.py
 scripts/prepare_moocradar.py
@@ -192,8 +223,10 @@ Key source modules:
 - `dkt.py`: DKT model and proficiency export support.
 - `educational_multi_agent_prompt.py`: current multi-role prompt builders.
 - `four_tier.py`: four-tier parsing and external scoring helpers.
+- `learning_tool_state.py`: NCDM/IRT/memory tool-state encoder.
 - `evaluation.py`: response, distribution, and cognitive-consistency metrics.
-- `simulators/multi_role_simulator.py`: current three-stage simulator.
+- `evaluation_views.py`: paper-oriented metric layers and result-table views.
+- `simulators/multi_role_simulator.py`: current multi-role simulator.
 
 ## Metrics
 
@@ -221,6 +254,20 @@ Probability/confidence diagnostics, when available:
 Because many fixed cohorts are positive-skewed, ACC and F1 are not sufficient.
 Always report Balanced Accuracy, Specificity, MCC, LDE, and CDE with ACC/F1.
 
+For paper tables, summarize existing outputs with:
+
+```powershell
+python experiments\evaluation\summarize_results.py `
+  --inputs <ours.json> <agent4edu.json> <random.json> <dkt_target_eval.json> `
+  --names "Ours Full" "Agent4Edu-style" "Probability-sampling Baseline" "DKT" `
+  --output outputs\evaluation\summary.json `
+  --markdown-output outputs\evaluation\summary.md
+```
+
+This script splits results into response consistency, distribution consistency,
+task consistency, and diagnostic consistency. Agent4Edu and DKT naturally have
+`None` for diagnostic fields they do not expose.
+
 ## Verification
 
 Run offline regression tests before and after prompt or simulator changes:
@@ -231,6 +278,7 @@ python scripts/test_four_tier.py
 python scripts/test_experiment_scaffold.py
 python scripts/test_cognitive_strategy.py
 python scripts/test_multi_role_simulator.py
+python scripts/test_evaluation_views.py
 ```
 
 For syntax checks:

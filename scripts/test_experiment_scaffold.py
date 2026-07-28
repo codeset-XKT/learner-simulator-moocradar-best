@@ -52,7 +52,11 @@ def main() -> None:
         "no-cognitive-selection",
         "no-cognitive-profile",
         "no-ability-profile",
+        "no-irt-evidence",
+        "no-learning-tool-state",
         "no-item-conditioned-ability",
+        "no-historical-reflection",
+        "with-dkt-predictor",
         "best-full",
         "best-no-ability-profile",
     }

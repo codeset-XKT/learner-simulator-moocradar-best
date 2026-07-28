@@ -154,12 +154,12 @@ def build_arbiter_prompt(
         [
             "# Selection Rules #",
             "1. Prefer the competent candidate when proficiency and related memory are stable and the response is learner-like.",
-            "2. Prefer the misconception candidate when history, transfer fragility, or repeated errors make a concept-confusion path plausible.",
-            "3. Prefer the careless candidate when non-cognitive state, item format, or option traps make a slip plausible.",
+            "2. Prefer the misconception candidate only when item-specific history, transfer fragility, or repeated errors clearly support a concept-confusion path.",
+            "3. Prefer the careless candidate only when non-cognitive state, item format, or option traps clearly support a first-attempt slip.",
             "4. Do not maximize correctness. Also do not maximize incorrectness. Choose the most profile-consistent first attempt.",
             "5. You may consider disagreement among candidates as uncertainty evidence, but you must still select one candidate.",
-            "6. If regulation_decision is transfer_fragile or load_induced_slip and candidates disagree, competent is not the default. Select competent only when the learner evidence clearly rejects both non-competent paths.",
-            "7. If competent and a regulated alternative path give different answers with similar confidence, use preferred_response_path unless knowledge readiness and performance stability strongly support competent.",
+            "6. If KT knowledge readiness is high, competent remains the default unless current-item evidence clearly rejects it.",
+            "7. If competent and a regulated alternative path give different answers with similar confidence, use preferred_response_path only when knowledge readiness is not high or performance evidence clearly supports the alternative.",
             "",
             "Output exactly:",
             "SelectedAgent: <competent, misconception, or careless>",
@@ -271,72 +271,77 @@ def build_learning_performance_regulation(
     evidence: list[str] = []
     band = str((tendency_calibration or {}).get("band", "mixed"))
     if "error" in band:
-        instability_score += 0.25
+        instability_score += 0.14
         evidence.append(f"response tendency is {band}")
     elif band == "mixed":
-        instability_score += 0.12
+        instability_score += 0.06
         evidence.append("response tendency is mixed")
     elif "strong-correct" in band:
-        instability_score -= 0.15
+        instability_score -= 0.25
     elif "correct" in band:
-        instability_score -= 0.05
+        instability_score -= 0.15
 
     knowledge_evidence: list[str] = []
     if mastery is not None:
-        if mastery < 0.42:
-            instability_score += 0.25
+        if mastery < 0.35:
+            instability_score += 0.16
             evidence.append("current mastery is low")
-        elif mastery < 0.58:
-            instability_score += 0.12
+        elif mastery < 0.50:
+            instability_score += 0.06
             evidence.append("current mastery is medium-fragile")
+        elif mastery >= 0.75:
+            instability_score -= 0.32
+        elif mastery >= 0.62:
+            instability_score -= 0.22
         elif mastery >= 0.78:
-            instability_score -= 0.12
+            instability_score -= 0.32
         knowledge_evidence.append(f"DKT mastery={round(mastery, 3)}")
 
     load_evidence: list[str] = []
     if attention is not None and attention < 0.55:
-        instability_score += 0.18
+        instability_score += 0.10
         evidence.append("attention is low")
         load_evidence.append(f"attention={round(attention, 3)}")
     if fatigue is not None and fatigue > 0.35:
-        instability_score += 0.12
+        instability_score += 0.06
         evidence.append("fatigue is high")
         load_evidence.append(f"fatigue={round(fatigue, 3)}")
     if carelessness is not None and carelessness > 0.20:
-        instability_score += 0.18
+        instability_score += 0.08
         evidence.append("carelessness is high")
         load_evidence.append(f"carelessness={round(carelessness, 3)}")
     if guessing is not None and guessing > 0.20:
-        instability_score += 0.12
+        instability_score += 0.06
         evidence.append("guessing tendency is high")
         load_evidence.append(f"guessing={round(guessing, 3)}")
     if misconception is not None and misconception > 0.25:
-        instability_score += 0.18
+        instability_score += 0.08
         evidence.append("misconception persistence is visible")
     if transfer_fragility is not None and transfer_fragility > 0.55:
-        instability_score += 0.12
+        instability_score += 0.06
         evidence.append("transfer is fragile")
     if confusion is not None and confusion > 0.20:
-        instability_score += 0.12
+        instability_score += 0.04
         evidence.append("confusion proxy is high")
     if frustration is not None and frustration > 0.25:
-        instability_score += 0.08
+        instability_score += 0.03
         evidence.append("frustration proxy is high")
     if trend is not None and trend < -0.10:
-        instability_score += 0.10
+        instability_score += 0.05
         evidence.append("recent trend is declining")
     if stability is not None and stability < 0.45:
-        instability_score += 0.10
+        instability_score += 0.05
         evidence.append("mastery stability is low")
     if recovery is not None and recovery < 0.35:
-        instability_score += 0.08
+        instability_score += 0.04
         evidence.append("error recovery is weak")
 
-    if len(unique_answers) > 1:
-        instability_score += 0.18
+    kt_success_anchor = mastery is not None and mastery >= 0.62
+    if len(unique_answers) > 1 and not kt_success_anchor:
+        instability_score += 0.10
         evidence.append("candidate answers disagree")
-    if non_competent_disagree:
-        instability_score += 0.12
+    if non_competent_disagree and not kt_success_anchor:
+        instability_score += 0.06
         evidence.append("regulated alternatives disagree with competent")
 
     instability_score = min(1.0, max(0.0, instability_score))
@@ -416,6 +421,7 @@ def build_learning_performance_regulation(
             decision in {"transfer_fragile", "load_induced_slip", "uncertain_performance"}
             and non_competent_disagree
             and preferred in candidates
+            and not kt_success_anchor
         ),
         "main_evidence": evidence[:6],
     }
@@ -506,6 +512,9 @@ def _regulation_decision(
     preferred: str,
     non_competent_disagree: bool,
 ) -> str:
+    if knowledge_readiness == "high":
+        if cognitive_load != "high" or instability_score < 0.60:
+            return "stable_performance"
     if cognitive_load == "high" and non_competent_disagree:
         return "load_induced_slip"
     if transfer_readiness == "low" and non_competent_disagree:
@@ -517,9 +526,9 @@ def _regulation_decision(
         and instability_score < 0.35
     ):
         return "stable_performance"
-    if instability_score >= 0.55 and non_competent_disagree:
+    if instability_score >= 0.65 and non_competent_disagree:
         return "load_induced_slip" if preferred == "careless" else "transfer_fragile"
-    if instability_score >= 0.35 or performance_stability == "medium":
+    if instability_score >= 0.45 or performance_stability == "medium":
         return "partial_performance"
     return "stable_performance"
 

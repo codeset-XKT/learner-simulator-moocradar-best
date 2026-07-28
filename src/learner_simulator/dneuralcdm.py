@@ -67,16 +67,23 @@ class DNeuralCDMProficiency:
             return None
         return float(seq[index][concept_index])
 
-    def latest_values(self, uid: str) -> dict[int, float]:
+    def values_at(self, uid: str, time_step: int | None = None) -> dict[int, float]:
         seq = self._sequence(uid)
         if not seq:
             return {}
-        latest = seq[-1]
+        index = len(seq) - 1 if time_step is None else max(0, min(len(seq) - 1, time_step))
         values: dict[int, float] = {}
-        for index, value in enumerate(latest):
-            cid = self.index_to_concept.get(index, index)
+        for concept_index, value in enumerate(seq[index]):
+            cid = self.index_to_concept.get(concept_index, concept_index)
             values[int(cid)] = float(value)
         return values
+
+    def latest_values(self, uid: str) -> dict[int, float]:
+        return self.values_at(uid)
+
+    def sequence_length(self, uid: str) -> int:
+        seq = self._sequence(uid)
+        return len(seq or [])
 
     @staticmethod
     def tier(value: float | None) -> str:

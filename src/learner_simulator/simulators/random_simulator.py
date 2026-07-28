@@ -50,11 +50,12 @@ class LearnerState:
 
 
 class RandomLearnerSimulator:
-    """Random/statistical baseline simulator.
+    """Probability-sampling statistical baseline simulator.
 
-    This is the minimal non-LLM simulator. It estimates response probabilities
-    from user, item, concept, and dynamic mastery statistics, then samples a
-    Bernoulli response.
+    This is the minimal non-LLM simulator. It estimates ``p_correct`` from
+    user, item, concept, dynamic mastery, and optional external proficiency
+    statistics, then samples a Bernoulli response. The class name is retained
+    for command-line compatibility; it is not a uniform random 0.5 baseline.
     """
 
     def __init__(

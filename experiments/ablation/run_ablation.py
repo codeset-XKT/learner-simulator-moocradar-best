@@ -28,7 +28,11 @@ ABLATIONS = {
     "no-cognitive-selection": {"cognitive_strategy": False},
     "no-cognitive-profile": {"cognitive_profile": False},
     "no-ability-profile": {"ability_profile": False},
+    "no-irt-evidence": {"irt_evidence": False},
+    "no-learning-tool-state": {"learning_tool_state": False},
     "no-item-conditioned-ability": {"item_conditioned_ability": False},
+    "no-historical-reflection": {"historical_reflection": False},
+    "with-dkt-predictor": {"dkt_predictor": True},
     "best-full": {"item_conditioned_ability": False},
     "best-no-ability-profile": {
         "ability_profile": False,
@@ -83,6 +87,10 @@ def main() -> None:
             "proficiency": True,
             "behavior": True,
             "four_tier": True,
+            "historical_reflection": True,
+            "irt_evidence": True,
+            "learning_tool_state": True,
+            "dkt_predictor": False,
             **ABLATIONS[variant],
         }
         report = run_experiment(

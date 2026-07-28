@@ -9,7 +9,7 @@ from learner_simulator.agent4edu_prompt import (
     proficiency_context,
 )
 from learner_simulator.behavior import non_cognitive_factors
-from learner_simulator.data import clean_sequence
+from learner_simulator.data import clean_sequence, sequence_row_from_steps
 from learner_simulator.educational_multi_agent_prompt import (
     build_cognitive_profile_view,
     build_four_tier_response_record,
@@ -20,7 +20,10 @@ from learner_simulator.four_tier import (
     compare_answers,
     parse_answer_only_response,
 )
+from learner_simulator.historical_reflection import build_historical_reflective_calibration
+from learner_simulator.irt_evidence import build_irt_ability_item_evidence
 from learner_simulator.item_conditioned_ability import build_item_conditioned_ability
+from learner_simulator.learning_tool_state import build_learning_tool_state
 from learner_simulator.llm import call_openai_compatible_chat
 from learner_simulator.simulators.llm_simulator import (
     _build_tendency_calibration,
@@ -34,16 +37,20 @@ from learner_simulator.simulators.random_simulator import (
 
 
 class MultiRoleLearnerSimulator(RandomLearnerSimulator):
-    """Multi-role learner simulator with three explicit research modules.
+    """Multi-role learner simulator with explicit educational evidence modules.
 
     The command name remains ``multi-role`` for compatibility. Internally the
     implementation is organized as a compact educational simulation pipeline:
 
-    1. Learner Profile Encoder: stable learner-level traits from observed
+    1. Cognitive Profile Encoder: stable learner-level traits from observed
        history.
-    2. Item-conditioned Evidence Encoder: current-item knowledge alignment,
-       practice alignment, demand fit, and transfer burden.
-    3. Four-tier Response Simulator: learner-level answer generation; external
+    2. Knowledge Proficiency Encoder: current-concept proficiency from NCDM,
+       with DKT disabled by default for fairness.
+    3. IRT Ability-Difficulty Evidence: Rasch ability versus item difficulty
+       evidence, used as challenge calibration rather than a response label.
+    4. Historical Reflective Calibration: replay calibration inside observed
+       history only, never using target labels.
+    5. Four-tier Response Simulator: learner-level answer generation; external
        diagnostic scoring is used only for evaluation.
     """
 
@@ -65,6 +72,10 @@ class MultiRoleLearnerSimulator(RandomLearnerSimulator):
         include_cognitive_profile: bool = True,
         include_ability_profile: bool = True,
         include_item_conditioned_ability: bool = True,
+        include_irt_evidence: bool = True,
+        include_learning_tool_state: bool = True,
+        include_historical_reflection: bool = True,
+        include_dkt_predictor: bool = False,
         feedback_mode: str = "rollout",
     ) -> dict[str, Any]:
         if response_format not in {"four_tier", "answer_only"}:
@@ -73,7 +84,16 @@ class MultiRoleLearnerSimulator(RandomLearnerSimulator):
             raise ValueError(f"Unsupported feedback_mode: {feedback_mode}")
 
         uid = row["uid"]
-        state, memory = self.initialize_from_history(uid, history_row, questions)
+        state, memory = self._initialize_from_history_with_dkt_policy(
+            uid,
+            history_row,
+            questions,
+            include_dkt_predictor=include_dkt_predictor,
+        )
+        ncdm_state = self._initialize_ncdm_runtime_state(
+            uid,
+            required=include_proficiency and not include_dkt_predictor,
+        )
         profile = self.get_profile(uid)
         full_profile_context = profile.to_context()
         profile_context = (
@@ -83,6 +103,15 @@ class MultiRoleLearnerSimulator(RandomLearnerSimulator):
         )
         if not include_ability_profile:
             profile_context = _without_ability_profile(profile_context)
+        historical_reflection = self._build_historical_reflection(
+            uid=uid,
+            history_row=history_row,
+            questions=questions,
+            enabled=include_historical_reflection,
+            include_dkt_predictor=include_dkt_predictor,
+        )
+        profile_context["historical_reflective_calibration"] = historical_reflection
+        historical_policy = historical_reflection.get("adaptive_policy") or {}
 
         simulated_steps: list[dict[str, Any]] = []
         for step in clean_sequence(row):
@@ -91,23 +120,50 @@ class MultiRoleLearnerSimulator(RandomLearnerSimulator):
             cid = step["cid"]
             real_response = step["response"]
             components = self.probability_components(uid, qid, cid, state)
-            mastery_before = components["mastery"]
-            kt_state_probability = float(mastery_before)
-            external_kt_raw_probability = self._dkt_raw_probability(uid, cid)
-            dkt_predicted_response = (
-                int(external_kt_raw_probability >= 0.5)
-                if external_kt_raw_probability is not None
+            dynamic_mastery_before = components["mastery"]
+            knowledge_state_source = self._knowledge_state_source(
+                include_dkt_predictor=include_dkt_predictor,
+            )
+            knowledge_state_probability = self._knowledge_state_probability(
+                uid,
+                cid,
+                ncdm_state=ncdm_state,
+                include_dkt_predictor=include_dkt_predictor,
+            )
+            if knowledge_state_probability is None:
+                knowledge_state_probability = float(dynamic_mastery_before)
+                knowledge_state_source = "dynamic_fallback"
+            ncdm_probability = (
+                round(float(knowledge_state_probability), 6)
+                if knowledge_state_source == "dneuralcdm_online"
                 else None
             )
-            fallback_response = int(mastery_before >= 0.5)
+            external_kt_raw_probability = (
+                float(knowledge_state_probability)
+                if include_dkt_predictor and knowledge_state_source == "dkt"
+                else None
+            )
+            predictive_mastery = (
+                float(knowledge_state_probability)
+            )
+            kt_state_probability = float(predictive_mastery)
+            dkt_predicted_response = (
+                int(external_kt_raw_probability >= 0.5)
+                if include_dkt_predictor and external_kt_raw_probability is not None
+                else None
+            )
+            fallback_response = int(predictive_mastery >= 0.5)
             behavior_factors = non_cognitive_factors(
                 profile_context,
                 int(step.get("position") or 0),
                 self.random,
             )
             active_behavior = behavior_factors if include_behavior else None
+            prompt_components = dict(components)
+            prompt_components["mastery"] = round(float(predictive_mastery), 6)
+            prompt_components["mastery_source"] = knowledge_state_source
             visible_components = _visible_probability_components(
-                components,
+                prompt_components,
                 include_proficiency=include_proficiency,
             )
             tendency_calibration = _build_tendency_calibration(
@@ -119,9 +175,20 @@ class MultiRoleLearnerSimulator(RandomLearnerSimulator):
             qmeta_for_modules = dict(qmeta)
             qmeta_for_modules.setdefault("qid", qid)
             qmeta_for_modules.setdefault("cid", cid)
+            irt_evidence = (
+                build_irt_ability_item_evidence(self.irt_model, uid, int(qid))
+                if include_irt_evidence
+                else {
+                    "module": "irt_ability_difficulty_evidence",
+                    "ablated": True,
+                    "response_guidance": (
+                        "IRT ability-difficulty evidence is removed for this ablation."
+                    ),
+                }
+            )
             kc_routes = qmeta.get("kc_routes", [])
             memory_context = (
-                memory.snapshot(cid, kc_routes, mastery_before)
+                memory.snapshot(cid, kc_routes, predictive_mastery)
                 if include_memory
                 else {"short_memory": [], "long_memory": {}}
             )
@@ -130,10 +197,27 @@ class MultiRoleLearnerSimulator(RandomLearnerSimulator):
                 true_concept=true_concept,
                 seed=self.irt_model.seed + int(qid) + int(step.get("position") or 0),
             )
-            proficiency = (
-                proficiency_context(true_concept, mastery_before)
-                if include_proficiency
-                else None
+            proficiency = None
+            if include_proficiency:
+                proficiency = proficiency_context(true_concept, predictive_mastery)
+                proficiency["source"] = prompt_components["mastery_source"]
+            learning_tool_state = (
+                build_learning_tool_state(
+                    question=qmeta_for_modules,
+                    proficiency=proficiency,
+                    irt_evidence=irt_evidence,
+                    memory_context=memory_context,
+                )
+                if include_learning_tool_state
+                else {
+                    "module": "learning_tool_state_encoder",
+                    "ablated": True,
+                    "response_planning": "tool_state_removed_for_ablation",
+                    "state_commitment": (
+                        "Learning tool state is removed; rely on the remaining "
+                        "profile, memory, proficiency, and item evidence."
+                    ),
+                }
             )
             cognitive_profile_view = build_cognitive_profile_view(
                 profile_context=profile_context,
@@ -153,6 +237,8 @@ class MultiRoleLearnerSimulator(RandomLearnerSimulator):
                 memory_context=memory_context,
                 behavior_factors=active_behavior,
                 cognitive_profile_view=cognitive_profile_view,
+                irt_evidence=irt_evidence,
+                learning_tool_state=learning_tool_state,
             )
 
             step_result: dict[str, Any] = {
@@ -163,9 +249,20 @@ class MultiRoleLearnerSimulator(RandomLearnerSimulator):
                 "qid": qid,
                 "cid": cid,
                 "probability_components": components,
+                "prompt_probability_components": prompt_components,
                 "visible_probability_components": visible_components,
                 "kt_state_probability": round(kt_state_probability, 6),
-                "external_proficiency_source": self._external_proficiency_source(),
+                "knowledge_state_source": knowledge_state_source,
+                "knowledge_state_probability": round(kt_state_probability, 6),
+                "dynamic_mastery_internal": round(float(dynamic_mastery_before), 6),
+                "external_proficiency_source": knowledge_state_source,
+                "dkt_predictor_in_prompt": include_dkt_predictor,
+                "irt_evidence_in_prompt": include_irt_evidence,
+                "irt_ability_difficulty_evidence": irt_evidence,
+                "learning_tool_state_in_prompt": include_learning_tool_state,
+                "learning_tool_state": learning_tool_state,
+                "historical_reflective_calibration": historical_reflection,
+                "historical_replay_policy_adaptation": historical_policy,
                 "external_kt_raw_probability": (
                     round(external_kt_raw_probability, 6)
                     if external_kt_raw_probability is not None
@@ -188,6 +285,12 @@ class MultiRoleLearnerSimulator(RandomLearnerSimulator):
                     else None
                 ),
                 "dkt_predicted_response": dkt_predicted_response,
+                "ncdm_correct_probability": ncdm_probability,
+                "ncdm_predicted_response": (
+                    int(ncdm_probability >= 0.5)
+                    if ncdm_probability is not None
+                    else None
+                ),
                 "non_cognitive_factors": active_behavior,
                 "tendency_calibration": tendency_calibration,
                 "feedback_mode": feedback_mode,
@@ -228,7 +331,11 @@ class MultiRoleLearnerSimulator(RandomLearnerSimulator):
                         "cognitive_profile": include_cognitive_profile,
                         "ability_profile": include_ability_profile
                         and bool(profile_context.get("ability_profile")),
+                        "irt_evidence": include_irt_evidence,
+                        "learning_tool_state": include_learning_tool_state,
                         "item_conditioned_evidence": include_item_conditioned_ability,
+                        "historical_reflection": include_historical_reflection,
+                        "dkt_predictor": include_dkt_predictor,
                         "four_tier": True,
                     },
                 },
@@ -245,6 +352,8 @@ class MultiRoleLearnerSimulator(RandomLearnerSimulator):
                         proficiency=proficiency,
                         behavior_factors=active_behavior,
                         tendency_calibration=tendency_calibration,
+                        irt_evidence=irt_evidence,
+                        learning_tool_state=learning_tool_state,
                     )
                     if include_item_conditioned_ability
                     else {
@@ -262,7 +371,10 @@ class MultiRoleLearnerSimulator(RandomLearnerSimulator):
                     concept_options=concept_options,
                     behavior_factors=active_behavior,
                     cognitive_profile=cognitive_profile_view,
+                    historical_reflection=historical_reflection,
                     item_conditioned_ability=item_conditioned_ability,
+                    irt_evidence=irt_evidence,
+                    learning_tool_state=learning_tool_state,
                     response_format=response_format,
                 )
                 output_contract = (
@@ -363,6 +475,8 @@ class MultiRoleLearnerSimulator(RandomLearnerSimulator):
                             action=action,
                             four_tier=four_tier,
                             item_conditioned_ability=item_conditioned_ability,
+                            irt_evidence=irt_evidence,
+                            learning_tool_state=learning_tool_state,
                         )
                         step_result["four_tier_response_module"] = four_tier_record
                         step_result["four_tier_response_simulation"] = four_tier_record
@@ -382,15 +496,29 @@ class MultiRoleLearnerSimulator(RandomLearnerSimulator):
                 else int(step_result["simulated_response"])
             )
             step_result["feedback_response"] = feedback_response
-            mastery_for_update = state.get_mastery(cid, 0.5)
+            mastery_for_update = float(
+                ncdm_state.get(int(cid), kt_state_probability)
+                if ncdm_state is not None
+                else state.get_mastery(cid, 0.5)
+            )
             state.update(cid, feedback_response, learning_rate=self.learning_rate)
-            updated_mastery = state.get_mastery(cid, 0.5)
+            if ncdm_state is not None:
+                updated_mastery = self._update_ncdm_runtime_state(
+                    ncdm_state,
+                    cid,
+                    feedback_response,
+                )
+                state_source = "dneuralcdm_online_update"
+            else:
+                updated_mastery = state.get_mastery(cid, 0.5)
+                state_source = "dynamic_fallback_update"
             step_result["state_evolution"] = self._build_state_evolution_task(
                 cid=cid,
                 feedback_response=feedback_response,
                 feedback_mode=feedback_mode,
                 mastery_before=mastery_for_update,
                 mastery_after=updated_mastery,
+                state_source=state_source,
             )
             if isinstance(step_result.get("simulation_tasks"), dict):
                 step_result["simulation_tasks"]["task4_state_evolution"] = (
@@ -411,6 +539,8 @@ class MultiRoleLearnerSimulator(RandomLearnerSimulator):
         summary["target_interactions"] = len(simulated_steps)
         summary["simulator_type"] = "educational_multi_agent"
         summary["feedback_mode"] = feedback_mode
+        summary["historical_reflective_calibration"] = historical_reflection
+        summary["dkt_predictor_in_prompt"] = include_dkt_predictor
         return summary
 
     @staticmethod
@@ -441,6 +571,7 @@ class MultiRoleLearnerSimulator(RandomLearnerSimulator):
                 ),
                 "item_conditioned_ability": item_conditioned_ability,
                 "kt_decision_anchor": item_conditioned_ability.get("kt_decision_anchor"),
+                "learning_tool_state": item_conditioned_ability.get("learning_tool_state"),
                 "evaluation": "concept_label_and_kt_anchor_consistency",
             },
             "task3_four_tier_response_generation": {
@@ -465,10 +596,12 @@ class MultiRoleLearnerSimulator(RandomLearnerSimulator):
         feedback_mode: str,
         mastery_before: float,
         mastery_after: float,
+        state_source: str = "dynamic_fallback_update",
     ) -> dict[str, Any]:
         return {
             "objective": "update learner state after the current interaction",
             "cid": cid,
+            "state_source": state_source,
             "feedback_mode": feedback_mode,
             "feedback_response": feedback_response,
             "mastery_before": round(float(mastery_before), 6),
@@ -483,6 +616,8 @@ class MultiRoleLearnerSimulator(RandomLearnerSimulator):
         memory_context: dict[str, Any],
         behavior_factors: dict[str, float] | None,
         cognitive_profile_view: dict[str, Any],
+        irt_evidence: dict[str, Any] | None = None,
+        learning_tool_state: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         long_memory = memory_context.get("long_memory") or {}
         return {
@@ -496,7 +631,15 @@ class MultiRoleLearnerSimulator(RandomLearnerSimulator):
                 ),
                 "current_concept_memory": long_memory.get("current_concept"),
             },
+            "irt_ability_difficulty_evidence": irt_evidence,
+            "learning_tool_state": learning_tool_state,
             "non_cognitive_state": behavior_factors,
+            "historical_reflective_calibration": profile_context.get(
+                "historical_reflective_calibration"
+            ),
+            "historical_replay_policy_adaptation": (
+                profile_context.get("historical_reflective_calibration") or {}
+            ).get("adaptive_policy"),
         }
 
     @staticmethod
@@ -507,13 +650,17 @@ class MultiRoleLearnerSimulator(RandomLearnerSimulator):
         tendency_calibration: dict[str, Any] | None,
         item_conditioned_ability: dict[str, Any] | None,
     ) -> dict[str, Any]:
-        """Record LLM-vs-DKT alignment without changing the LLM outcome."""
+        """Record LLM-vs-proficiency alignment without changing the LLM outcome."""
 
-        mastery = _safe_float(components.get("mastery"), default=0.5)
+        activation = item_conditioned_ability or {}
+        kt_anchor = activation.get("kt_decision_anchor") or {}
+        mastery = _safe_float(
+            kt_anchor.get("probability"),
+            default=_safe_float(components.get("mastery"), default=0.5),
+        )
         dkt_predicted = int(mastery >= 0.5)
         tendency_band = str((tendency_calibration or {}).get("band", "mixed"))
         history_level = str((tendency_calibration or {}).get("history_level", "unknown"))
-        activation = item_conditioned_ability or {}
         confidence = min(1.0, max(0.0, _safe_float(answer_confidence, default=0.5)))
 
         conflict_direction = "aligned"
@@ -536,9 +683,10 @@ class MultiRoleLearnerSimulator(RandomLearnerSimulator):
         )
 
         return {
-            "module": "dkt_prompt_conditioning_diagnostics",
+            "module": "proficiency_prompt_conditioning_diagnostics",
             "method": "prompt_only_no_posthoc_override",
             "kt_state_probability": round(mastery, 6),
+            "kt_state_source": kt_anchor.get("source", "prompt_mastery"),
             "kt_state_predicted_response": dkt_predicted,
             "llm_response": int(llm_correct),
             "final_response": int(llm_correct),
@@ -560,17 +708,233 @@ class MultiRoleLearnerSimulator(RandomLearnerSimulator):
             "history_level": history_level,
         }
 
-    def _dkt_raw_probability(self, uid: str, cid: int) -> float | None:
+    def _external_proficiency_probability(
+        self,
+        uid: str,
+        cid: int,
+        include_dkt_predictor: bool = False,
+    ) -> float | None:
         if getattr(self, "mikt_proficiency", None) is not None and self.mikt_proficiency.available():
             value = self.mikt_proficiency.value(uid, cid)
             if value is not None:
                 return min(1.0, max(0.0, float(value)))
-        if not self.dkt_proficiency.available():
+        if self.dneuralcdm_proficiency.available():
+            value = self.dneuralcdm_proficiency.value(uid, cid)
+            if value is not None:
+                return min(1.0, max(0.0, float(value)))
+        if include_dkt_predictor and self.dkt_proficiency.available():
+            value = self.dkt_proficiency.value(uid, cid)
+            if value is not None:
+                return min(1.0, max(0.0, float(value)))
+        return None
+
+    def _external_proficiency_source(
+        self,
+        include_dkt_predictor: bool = False,
+    ) -> str | None:
+        if getattr(self, "mikt_proficiency", None) is not None and self.mikt_proficiency.available():
+            return "mikt"
+        if self.dneuralcdm_proficiency.available():
+            return "dneuralcdm"
+        if include_dkt_predictor and self.dkt_proficiency.available():
+            return "dkt"
+        return None
+
+    def _initialize_ncdm_runtime_state(
+        self,
+        uid: str,
+        required: bool,
+    ) -> dict[int, float] | None:
+        if not self.dneuralcdm_proficiency.available():
+            if required:
+                raise RuntimeError(
+                    "Multi-role Full requires --dneuralcdm-proficiency. "
+                    "Without NCDM, run a dynamic-only/proficiency ablation instead."
+                )
             return None
-        value = self.dkt_proficiency.value(uid, cid)
-        if value is None:
+        values = self.dneuralcdm_proficiency.latest_values(uid)
+        if not values and required:
+            raise RuntimeError(f"NCDM proficiency is missing for uid={uid}")
+        return {int(cid): min(1.0, max(0.0, float(value))) for cid, value in values.items()}
+
+    def _ncdm_state_at_history_prefix(
+        self,
+        uid: str,
+        prefix_length: int,
+    ) -> dict[int, float] | None:
+        if not self.dneuralcdm_proficiency.available():
             return None
-        return min(1.0, max(0.0, float(value)))
+        if prefix_length <= 0:
+            return None
+        values = self.dneuralcdm_proficiency.values_at(uid, time_step=prefix_length - 1)
+        if not values:
+            return None
+        return {int(cid): min(1.0, max(0.0, float(value))) for cid, value in values.items()}
+
+    def _knowledge_state_probability(
+        self,
+        uid: str,
+        cid: int,
+        ncdm_state: dict[int, float] | None,
+        include_dkt_predictor: bool = False,
+    ) -> float | None:
+        if include_dkt_predictor and self.dkt_proficiency.available():
+            value = self.dkt_proficiency.value(uid, cid)
+            if value is not None:
+                return min(1.0, max(0.0, float(value)))
+        if ncdm_state is not None:
+            value = ncdm_state.get(int(cid))
+            if value is not None:
+                return min(1.0, max(0.0, float(value)))
+        return None
+
+    def _knowledge_state_source(
+        self,
+        include_dkt_predictor: bool = False,
+    ) -> str:
+        if include_dkt_predictor and self.dkt_proficiency.available():
+            return "dkt"
+        if self.dneuralcdm_proficiency.available():
+            return "dneuralcdm_online"
+        return "dynamic_fallback"
+
+    def _update_ncdm_runtime_state(
+        self,
+        ncdm_state: dict[int, float],
+        cid: int,
+        feedback_response: int,
+    ) -> float:
+        cid = int(cid)
+        before = min(1.0, max(0.0, float(ncdm_state.get(cid, 0.5))))
+        after = before + self.learning_rate * (int(feedback_response) - before)
+        after = min(1.0, max(0.0, float(after)))
+        ncdm_state[cid] = after
+        return after
+
+    def _mastery_source(self, uid: str, cid: int) -> str | None:
+        if (
+            getattr(self, "mikt_proficiency", None) is not None
+            and self.mikt_proficiency.available()
+            and self.mikt_proficiency.value(uid, cid) is not None
+        ):
+            return "mikt"
+        if (
+            self.dneuralcdm_proficiency.available()
+            and self.dneuralcdm_proficiency.value(uid, cid) is not None
+        ):
+            return "dneuralcdm"
+        if (
+            getattr(self, "_allow_dkt_state_seed", False)
+            and self.dkt_proficiency.available()
+            and self.dkt_proficiency.value(uid, cid) is not None
+        ):
+            return "dkt"
+        return None
+
+    def _dkt_raw_probability(self, uid: str, cid: int) -> float | None:
+        return self._external_proficiency_probability(
+            uid,
+            cid,
+            include_dkt_predictor=True,
+        )
+
+    def _seed_state_from_external_proficiency(self, uid: str, state: Any) -> None:
+        if getattr(self, "_allow_dkt_state_seed", False):
+            super()._seed_state_from_external_proficiency(uid, state)
+            return
+        if self.mikt_proficiency.available():
+            for cid, value in self.mikt_proficiency.latest_values(uid).items():
+                state.mastery[int(cid)] = min(1.0, max(0.0, float(value)))
+            return
+        if not self.dneuralcdm_proficiency.available():
+            return
+        for cid, value in self.dneuralcdm_proficiency.latest_values(uid).items():
+            state.mastery[int(cid)] = min(1.0, max(0.0, float(value)))
+
+    def _initialize_from_history_with_dkt_policy(
+        self,
+        uid: str,
+        history_row: dict[str, str] | None,
+        questions: dict[str, dict[str, Any]],
+        include_dkt_predictor: bool,
+    ) -> Any:
+        previous = getattr(self, "_allow_dkt_state_seed", False)
+        self._allow_dkt_state_seed = bool(include_dkt_predictor)
+        try:
+            return self.initialize_from_history(uid, history_row, questions)
+        finally:
+            self._allow_dkt_state_seed = previous
+
+    def _build_historical_reflection(
+        self,
+        uid: str,
+        history_row: dict[str, str] | None,
+        questions: dict[str, dict[str, Any]],
+        enabled: bool,
+        include_dkt_predictor: bool,
+    ) -> dict[str, Any]:
+        if not enabled or history_row is None:
+            return build_historical_reflective_calibration(history_row, [])
+
+        history = clean_sequence(history_row)
+        if len(history) < 12:
+            return build_historical_reflective_calibration(history_row, [])
+
+        # Keep the default 90-history protocol as 80 prefix + 10 replay
+        # calibration + 10 target simulation.
+        replay_window = min(10, max(5, len(history) // 9))
+        prefix = history[:-replay_window]
+        replay = history[-replay_window:]
+        replay_state, _ = self._initialize_from_history_with_dkt_policy(
+            uid,
+            sequence_row_from_steps(uid, prefix),
+            questions,
+            include_dkt_predictor=include_dkt_predictor,
+        )
+        replay_ncdm_state = self._ncdm_state_at_history_prefix(uid, len(prefix))
+        records: list[dict[str, Any]] = []
+        for step in replay:
+            qid = int(step["qid"])
+            cid = int(step["cid"])
+            components = self.probability_components(uid, qid, cid, replay_state)
+            proficiency = self._knowledge_state_probability(
+                uid,
+                cid,
+                ncdm_state=replay_ncdm_state,
+                include_dkt_predictor=include_dkt_predictor,
+            )
+            probability = (
+                float(proficiency)
+                if proficiency is not None
+                else float(components.get("mastery", 0.5))
+            )
+            qmeta = questions.get(str(qid), {})
+            routes = qmeta.get("kc_routes") or []
+            records.append(
+                {
+                    "uid": uid,
+                    "qid": qid,
+                    "cid": cid,
+                    "concept": str(routes[0]) if routes else str(cid),
+                    "predicted_probability": probability,
+                    "prediction_source": (
+                        "dkt"
+                        if include_dkt_predictor and self.dkt_proficiency.available()
+                        else "dneuralcdm_replay"
+                        if replay_ncdm_state is not None
+                        else "dynamic_fallback"
+                    ),
+                    "real_response": int(step["response"]),
+                }
+            )
+            replay_state.update(cid, int(step["response"]), learning_rate=self.learning_rate)
+            if replay_ncdm_state is not None:
+                self._update_ncdm_runtime_state(
+                    replay_ncdm_state,
+                    cid,
+                    int(step["response"]),
+                )
+        return build_historical_reflective_calibration(history_row, records)
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:

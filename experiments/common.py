@@ -22,6 +22,7 @@ from learner_simulator.data import (  # noqa: E402
     take_sequence_rows,
 )
 from learner_simulator.evaluation import evaluate_steps, flatten_simulations  # noqa: E402
+from learner_simulator.evaluation_views import layered_metric_view  # noqa: E402
 from learner_simulator.llm import load_json  # noqa: E402
 from learner_simulator.simulators import (  # noqa: E402
     Agent4EduBaselineSimulator,
@@ -317,6 +318,13 @@ def run_experiment(
                 include_cognitive_strategy=modules.get("cognitive_strategy", True),
                 include_cognitive_profile=modules.get("cognitive_profile", True),
                 include_ability_profile=modules.get("ability_profile", True),
+                include_irt_evidence=modules.get("irt_evidence", True),
+                include_learning_tool_state=modules.get("learning_tool_state", True),
+                include_historical_reflection=modules.get(
+                    "historical_reflection",
+                    True,
+                ),
+                include_dkt_predictor=modules.get("dkt_predictor", False),
                 feedback_mode=args.feedback_mode,
                 **extra_module_kwargs,
             )
@@ -343,6 +351,16 @@ def run_experiment(
         "validity": validity_summary(name, steps),
         "sample_steps": steps[:20],
     }
+    report["metric_layers"] = layered_metric_view(
+        {
+            "name": name,
+            "source": "current_run",
+            "report": report,
+            "metrics": report["metrics"],
+            "validity": report["validity"],
+            "runtime": report["runtime"],
+        }
+    )
     if name == "agent4edu":
         report["agent4edu_reproduction"] = {
             "official_four_task_action_prompt": True,

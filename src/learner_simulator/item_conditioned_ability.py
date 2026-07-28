@@ -11,12 +11,14 @@ def build_item_conditioned_ability(
     proficiency: dict[str, Any] | None,
     behavior_factors: dict[str, float] | None,
     tendency_calibration: dict[str, Any] | None,
+    irt_evidence: dict[str, Any] | None = None,
+    learning_tool_state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Describe how historical ability is activated by the current item.
 
     This is an activation profile, not an error model. It avoids correctness
-    labels and probabilities, treats missing memory as unobserved rather than
-    negative evidence, and uses KT mastery as current-concept state evidence.
+    labels in prompts, treats missing memory as unobserved rather than negative
+    evidence, and uses proficiency/mastery as current-concept state evidence.
     """
 
     cognitive = profile_context.get("cognitive_profile") or {}
@@ -27,7 +29,7 @@ def build_item_conditioned_ability(
     errors = cognitive.get("error_generation_traits") or {}
 
     mastery = _optional_float((proficiency or {}).get("value"))
-    kt_anchor = _kt_decision_anchor(mastery)
+    kt_anchor = _kt_decision_anchor(mastery, source=(proficiency or {}).get("source"))
     item_demand_score = _item_demand_score(question)
     item_demand = _demand_level(item_demand_score)
     memory = _memory_support(question, memory_context)
@@ -49,30 +51,29 @@ def build_item_conditioned_ability(
         errors.get("carelessness_level") or errors.get("carelessness")
     )
 
-    mastery_signal = mastery if mastery is not None else 0.5
-    knowledge_alignment_score = (
-        0.72 * mastery_signal
-        + 0.16 * _scale_level(stability)
-        + 0.12 * _scale_level(breadth)
+    knowledge_alignment = _knowledge_alignment(
+        mastery=mastery,
+        memory=memory,
+        item_demand=item_demand,
+        stability=stability,
     )
-    if _mastery_protected(mastery, item_demand):
-        knowledge_alignment_score = max(knowledge_alignment_score, 0.72)
-    knowledge_alignment = _alignment_level(knowledge_alignment_score)
 
     practice_alignment = _practice_alignment(memory, practice)
 
-    demand_fit_score = (
-        0.28 * _scale_level(practice)
-        + 0.24 * _scale_level(challenge)
-        + 0.18 * _scale_level(breadth)
-        + 0.18 * _scale_level(generalization)
-        + 0.12 * _scale_level(stability)
-        - 0.07 * item_demand_score
-        - 0.04 * max(0, transfer_fragility - 2)
+    demand_alignment = _demand_alignment(
+        item_demand=item_demand,
+        practice=practice,
+        challenge=challenge,
+        breadth=breadth,
+        generalization=generalization,
+        stability=stability,
+        transfer_fragility=transfer_fragility,
     )
-    if _mastery_protected(mastery, item_demand):
-        demand_fit_score = max(demand_fit_score, 0.50)
-    demand_alignment = _alignment_level(demand_fit_score)
+    demand_alignment = _apply_irt_relative_challenge(
+        demand_alignment,
+        irt_evidence,
+        mastery=mastery,
+    )
 
     memory_support = _memory_level(memory)
     transfer_burden = _transfer_burden(
@@ -82,22 +83,19 @@ def build_item_conditioned_ability(
         memory=memory,
     )
 
-    activation_score = (
-        0.38 * _alignment_score(knowledge_alignment)
-        + 0.28 * _alignment_score(demand_alignment)
-        + 0.20 * _practice_score(practice_alignment)
-        + 0.08 * _scale_level(stability)
-        + 0.06 * _behavior_support(behavior_factors, concentration, carelessness)
+    ability_activation = _ability_activation(
+        knowledge_alignment=knowledge_alignment,
+        demand_alignment=demand_alignment,
+        practice_alignment=practice_alignment,
+        memory_support=memory_support,
+        transfer_burden=transfer_burden,
+        behavior_condition=_behavior_condition(behavior_factors, concentration, carelessness),
+        mastery=mastery,
+        item_demand=item_demand,
     )
-    if transfer_burden == "high" and memory["related_outcome"] == "mostly_incorrect":
-        activation_score -= 0.06
-    if _mastery_protected(mastery, item_demand):
-        activation_score = max(activation_score, 0.70)
-
-    ability_activation = (
-        "available" if activation_score >= 0.68
-        else "partial" if activation_score >= 0.42
-        else "limited"
+    ability_activation = _apply_learning_tool_state(
+        ability_activation,
+        learning_tool_state,
     )
     activation_level = ability_activation
 
@@ -108,9 +106,20 @@ def build_item_conditioned_ability(
     else:
         ability_expression = "bounded"
 
+    kt_proficiency_state = {
+        "concept": (proficiency or {}).get("concept"),
+        "source": (proficiency or {}).get("source"),
+        "value": kt_anchor["probability"],
+        "level": (proficiency or {}).get("level"),
+        "confidence_band": kt_anchor["confidence_band"],
+        "state_role": (
+            "current_knowledge_proficiency_for_this_concept_not_sampled_response_label"
+        ),
+    }
+
     return {
         "module": "item_conditioned_ability",
-        "method": "activation_from_profile_memory_proficiency_and_item",
+        "method": "proficiency_first_rule_based_activation_from_profile_memory_and_item",
         "knowledge_alignment": knowledge_alignment,
         "practice_alignment": practice_alignment,
         "demand_alignment": demand_alignment,
@@ -119,19 +128,27 @@ def build_item_conditioned_ability(
         "ability_activation": ability_activation,
         "activation_level": activation_level,
         "ability_expression": ability_expression,
+        "irt_relative_challenge": (irt_evidence or {}).get("relative_challenge"),
+        "irt_boundary_band": (irt_evidence or {}).get("boundary_band"),
+        "learning_tool_state": _compact_learning_tool_state(learning_tool_state),
+        "kt_proficiency_state": kt_proficiency_state,
         "kt_decision_anchor": kt_anchor,
         "evidence_role": (
-            "qualitative_activation_profile_with_kt_as_primary_predictive_anchor_not_posthoc_override"
+            "qualitative_activation_profile_with_proficiency_as_current_state_not_posthoc_override"
         ),
         "evidence": {
             "concept": (proficiency or {}).get("concept"),
+            "kt_source": (proficiency or {}).get("source"),
             "kt_probability": kt_anchor["probability"],
             "kt_predicted_response": kt_anchor["predicted_response"],
             "kt_confidence_band": kt_anchor["confidence_band"],
+            "kt_proficiency_state": kt_proficiency_state,
             "mastery_level": (proficiency or {}).get("level"),
             "mastery_protected": _mastery_protected(mastery, item_demand),
             "item_demand": item_demand,
             "item_demand_score": item_demand_score,
+            "irt_ability_difficulty": _compact_irt_evidence(irt_evidence),
+            "learning_tool_state": _compact_learning_tool_state(learning_tool_state),
             "practice_depth": ability.get("practice_depth"),
             "related_memory_count": memory["related_total"],
             "related_memory_outcome": memory["related_outcome"],
@@ -185,13 +202,92 @@ def _response_guidance(
     )
 
 
-def _kt_decision_anchor(mastery: float | None) -> dict[str, Any]:
+def _compact_irt_evidence(irt_evidence: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not irt_evidence:
+        return None
+    return {
+        "learner_ability_level": irt_evidence.get("learner_ability_level"),
+        "item_difficulty_level": irt_evidence.get("item_difficulty_level"),
+        "relative_challenge": irt_evidence.get("relative_challenge"),
+        "boundary_band": irt_evidence.get("boundary_band"),
+        "evidence_role": irt_evidence.get("evidence_role"),
+    }
+
+
+def _compact_learning_tool_state(
+    learning_tool_state: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if not learning_tool_state:
+        return None
+    return {
+        "joint_readiness_state": learning_tool_state.get("joint_readiness_state"),
+        "state_commitment": learning_tool_state.get("state_commitment"),
+        "response_planning": learning_tool_state.get("response_planning"),
+        "four_tier_generation_policy": learning_tool_state.get("four_tier_generation_policy"),
+        "knowledge_tool": learning_tool_state.get("knowledge_tool"),
+        "ability_difficulty_tool": learning_tool_state.get("ability_difficulty_tool"),
+    }
+
+
+def _apply_learning_tool_state(
+    ability_activation: str,
+    learning_tool_state: dict[str, Any] | None,
+) -> str:
+    if not learning_tool_state:
+        return ability_activation
+    readiness = learning_tool_state.get("joint_readiness_state")
+    if readiness in {
+        "ncdm_supported",
+        "ncdm_supported_challenged",
+        "ncdm_supported_unstable",
+        "ncdm_developing_supported",
+    }:
+        return _raise_activation(ability_activation)
+    return ability_activation
+
+
+def _raise_activation(value: str) -> str:
+    return {
+        "limited": "partial",
+        "partial": "available",
+        "available": "available",
+    }.get(value, value)
+
+
+def _lower_activation(value: str) -> str:
+    return {
+        "available": "partial",
+        "partial": "limited",
+        "limited": "limited",
+    }.get(value, value)
+
+
+def _apply_irt_relative_challenge(
+    demand_alignment: str,
+    irt_evidence: dict[str, Any] | None,
+    mastery: float | None,
+) -> str:
+    if not irt_evidence or irt_evidence.get("ablated"):
+        return demand_alignment
+    challenge = irt_evidence.get("relative_challenge")
+    boundary = irt_evidence.get("boundary_band")
+    if challenge == "above_learner_ability" and boundary in {"clear", "moderate"}:
+        if mastery is not None and mastery >= 0.65:
+            return demand_alignment
+        return _lower_level(demand_alignment)
+    if challenge == "below_learner_ability" and boundary == "clear":
+        return _raise_level(demand_alignment)
+    return demand_alignment
+
+
+def _kt_decision_anchor(mastery: float | None, source: Any = None) -> dict[str, Any]:
     if mastery is None:
         return {
+            "source": source or "unavailable",
             "probability": None,
             "predicted_response": None,
             "confidence_band": "unavailable",
-            "decision_weight": "fallback",
+            "evidence_priority": "fallback",
             "instruction": (
                 "No external KT probability is available; use learner profile, "
                 "memory, and item evidence."
@@ -207,10 +303,11 @@ def _kt_decision_anchor(mastery: float | None) -> dict[str, Any]:
     predicted = int(probability >= 0.5)
     direction = "success" if predicted == 1 else "failure"
     return {
+        "source": source or "dynamic",
         "probability": round(probability, 3),
         "predicted_response": predicted,
         "confidence_band": confidence_band,
-        "decision_weight": (
+        "evidence_priority": (
             "primary" if confidence_band in {"strong", "moderate"} else "secondary"
         ),
         "instruction": (
@@ -222,7 +319,7 @@ def _kt_decision_anchor(mastery: float | None) -> dict[str, Any]:
 
 
 def _mastery_protected(mastery: float | None, item_demand: str) -> bool:
-    return mastery is not None and mastery >= 0.75 and item_demand in {"low", "medium"}
+    return mastery is not None and mastery >= 0.65 and item_demand in {"low", "medium"}
 
 
 def _item_demand_score(question: dict[str, Any]) -> int:
@@ -333,61 +430,132 @@ def _memory_level(memory: dict[str, Any]) -> str:
     return "weak"
 
 
+def _knowledge_alignment(
+    mastery: float | None,
+    memory: dict[str, Any],
+    item_demand: str,
+    stability: int,
+) -> str:
+    """Infer current-concept readiness without hand-tuned weighted fusion."""
+
+    if mastery is None:
+        level = "medium"
+    elif mastery >= 0.70:
+        level = "high"
+    elif mastery >= 0.40:
+        level = "medium"
+    else:
+        level = "low"
+
+    if memory["identical_correct_count"] > 0:
+        level = _raise_level(level)
+    elif memory["related_outcome"] == "mostly_successful" and stability >= 2:
+        level = _raise_level(level)
+    elif memory["related_outcome"] == "mostly_incorrect" and not _mastery_protected(mastery, item_demand):
+        level = _lower_level(level)
+
+    if item_demand == "high" and not _mastery_protected(mastery, item_demand):
+        level = _lower_level(level)
+    return level
+
+
+def _demand_alignment(
+    item_demand: str,
+    practice: int,
+    challenge: int,
+    breadth: int,
+    generalization: int,
+    stability: int,
+    transfer_fragility: int,
+) -> str:
+    if item_demand == "low":
+        level = "high" if practice >= 2 or stability >= 2 else "medium"
+    elif item_demand == "medium":
+        level = "high" if practice >= 3 and challenge >= 2 else "medium"
+    else:
+        level = "medium" if challenge >= 3 and breadth >= 2 and generalization >= 2 else "low"
+
+    if transfer_fragility >= 3 and item_demand != "low":
+        level = _lower_level(level)
+    if generalization >= 3 and challenge >= 3 and item_demand != "low":
+        level = _raise_level(level)
+    return level
+
+
+def _ability_activation(
+    knowledge_alignment: str,
+    demand_alignment: str,
+    practice_alignment: str,
+    memory_support: str,
+    transfer_burden: str,
+    behavior_condition: str,
+    mastery: float | None,
+    item_demand: str,
+) -> str:
+    if _mastery_protected(mastery, item_demand) and demand_alignment != "low":
+        return "available"
+    if knowledge_alignment == "high":
+        if demand_alignment == "low":
+            return "partial"
+        if transfer_burden == "high" and memory_support == "weak":
+            return "partial"
+        return "available"
+    if knowledge_alignment == "medium":
+        if (
+            demand_alignment == "high"
+            or transfer_burden == "high"
+            or practice_alignment == "weak"
+            or behavior_condition == "strained"
+        ):
+            return "limited"
+        return "partial"
+    if memory_support == "strong" and demand_alignment != "high":
+        return "partial"
+    return "limited"
+
+
 def _transfer_burden(
     item_demand: str,
     generalization: int,
     transfer_fragility: int,
     memory: dict[str, Any],
 ) -> str:
-    score = {"low": 0, "medium": 1, "high": 2}.get(item_demand, 1)
-    if generalization <= 1:
-        score += 1
-    if transfer_fragility >= 3:
-        score += 1
-    if memory["related_outcome"] == "mostly_incorrect":
-        score += 1
-    if score >= 4:
+    fragile_transfer = generalization <= 1 or transfer_fragility >= 3
+    weak_memory = memory["related_outcome"] == "mostly_incorrect"
+    if item_demand == "high" and fragile_transfer and weak_memory:
         return "high"
-    if score >= 2:
+    if item_demand == "high" and fragile_transfer:
+        return "medium"
+    if item_demand == "medium" and fragile_transfer and weak_memory:
+        return "medium"
+    if item_demand != "low" and weak_memory:
         return "medium"
     return "low"
 
 
-def _behavior_support(
+def _behavior_condition(
     behavior_factors: dict[str, float] | None,
     concentration_level: int,
     carelessness_level: int,
-) -> float:
+) -> str:
     if not behavior_factors:
-        return 0.5
+        return "mixed"
     carelessness = _optional_float(behavior_factors.get("carelessness")) or 0.0
     fatigue = _optional_float(behavior_factors.get("fatigue")) or 0.0
     guessing = _optional_float(behavior_factors.get("guessing")) or 0.0
-    support = 1.0 - (0.35 * carelessness + 0.20 * fatigue + 0.15 * guessing)
-    support += 0.04 * (_scale_level(concentration_level) - 0.5)
-    support -= 0.03 * (_scale_level(carelessness_level) - 0.5)
-    return min(1.0, max(0.0, support))
+    if carelessness >= 0.25 or fatigue >= 0.40 or guessing >= 0.30:
+        return "strained"
+    if concentration_level >= 3 and carelessness_level <= 1 and fatigue < 0.25:
+        return "supportive"
+    return "mixed"
 
 
-def _alignment_level(score: float) -> str:
-    if score >= 0.68:
-        return "high"
-    if score >= 0.42:
-        return "medium"
-    return "low"
+def _raise_level(level: str) -> str:
+    return {"low": "medium", "medium": "high", "high": "high"}.get(level, "medium")
 
 
-def _alignment_score(level: str) -> float:
-    return {"high": 0.85, "medium": 0.55, "low": 0.25}.get(level, 0.5)
-
-
-def _practice_score(level: str) -> float:
-    return {
-        "strong": 0.85,
-        "mixed": 0.58,
-        "weak": 0.35,
-        "not_observed": 0.50,
-    }.get(level, 0.50)
+def _lower_level(level: str) -> str:
+    return {"high": "medium", "medium": "low", "low": "low"}.get(level, "medium")
 
 
 def _level_value(value: Any) -> int:
