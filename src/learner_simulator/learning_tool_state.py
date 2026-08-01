@@ -17,18 +17,26 @@ def build_learning_tool_state(
     override the LLM response after generation.
     """
 
+    response_probability = _optional_float((proficiency or {}).get("response_probability"))
+    concept_mastery = _optional_float((proficiency or {}).get("concept_mastery_value"))
     mastery = _optional_float((proficiency or {}).get("value"))
-    kt_level = _knowledge_readiness(mastery)
+    readiness_probability = (
+        response_probability
+        if response_probability is not None
+        else mastery
+    )
+    kt_level = _knowledge_readiness(readiness_probability)
     irt_challenge = (irt_evidence or {}).get("relative_challenge")
     irt_boundary = (irt_evidence or {}).get("boundary_band")
     memory = _related_memory(question, memory_context)
     readiness = _joint_readiness(
         kt_level=kt_level,
-        mastery=mastery,
+        mastery=readiness_probability,
         irt_challenge=irt_challenge,
         irt_boundary=irt_boundary,
         memory_pattern=memory["pattern"],
     )
+    decision_anchor = _decision_anchor(readiness_probability)
     return {
         "module": "learning_tool_state_encoder",
         "method": "agent4edu_style_ncdm_irt_tool_conditioning",
@@ -39,8 +47,35 @@ def build_learning_tool_state(
             "concept": (proficiency or {}).get("concept"),
             "mastery_level": (proficiency or {}).get("level") or kt_level,
             "readiness": kt_level,
-            "mastery_value": round(mastery, 3) if mastery is not None else None,
-            "role": "current_concept_knowledge_state",
+            "readiness_probability": (
+                round(readiness_probability, 3)
+                if readiness_probability is not None
+                else None
+            ),
+            "item_response_probability": (
+                round(response_probability, 3)
+                if response_probability is not None
+                else None
+            ),
+            "item_response_probability_source": (proficiency or {}).get(
+                "response_probability_source"
+            ),
+            "concept_mastery_value": (
+                round(concept_mastery, 3)
+                if concept_mastery is not None
+                else round(mastery, 3)
+                if mastery is not None
+                else None
+            ),
+            "concept_mastery_source": (proficiency or {}).get(
+                "concept_mastery_source"
+            ),
+            "mastery_value": (
+                round(readiness_probability, 3)
+                if readiness_probability is not None
+                else None
+            ),
+            "role": "current_item_response_readiness_with_concept_mastery_context",
         },
         "ability_difficulty_tool": {
             "tool": "IRT" if irt_evidence and not irt_evidence.get("ablated") else "unavailable",
@@ -52,17 +87,18 @@ def build_learning_tool_state(
         },
         "related_memory_tool": memory,
         "joint_readiness_state": readiness,
-        "state_commitment": _state_commitment(readiness),
-        "response_planning": _response_planning(readiness),
-        "four_tier_generation_policy": _four_tier_generation_policy(readiness),
+        "decision_anchor": decision_anchor,
+        "state_commitment": _state_commitment(readiness, decision_anchor),
+        "response_planning": decision_anchor["anchor"],
+        "four_tier_generation_policy": _four_tier_generation_policy(decision_anchor),
         "constraints": [
             "Read Profile, Memory, and Tool Evidence before the action step.",
-            "Use NCDM as the primary current knowledge-state tool.",
+            "Use the NCDM current-item response probability as the primary readiness tool when available.",
+            "Use NCDM concept mastery as supporting knowledge-state context.",
             "Use IRT as a secondary ability-difficulty tool.",
             "Use memory and profile mainly to shape reasoning style and confidence.",
-            "Generate a four-tier learner response rather than a Task4 Yes/No label.",
-            "Do not copy any tool value as a correctness label.",
-            "Do not perform a final expert correction pass after drafting the answer.",
+            "Use the KT decision anchor as a symmetric prior for LearnerCorrect.",
+            "Do not turn readiness into a success guarantee or weakness into an automatic error.",
         ],
     }
 
@@ -78,6 +114,7 @@ def prompt_learning_tool_state(state: dict[str, Any] | None) -> dict[str, Any]:
         "ability_difficulty_tool": state.get("ability_difficulty_tool"),
         "related_memory_tool": state.get("related_memory_tool"),
         "joint_readiness_state": state.get("joint_readiness_state"),
+        "decision_anchor": state.get("decision_anchor"),
         "state_commitment": state.get("state_commitment"),
         "response_planning": state.get("response_planning"),
         "four_tier_generation_policy": state.get("four_tier_generation_policy"),
@@ -110,108 +147,139 @@ def _joint_readiness(
     if memory_pattern == "recent_related_successes" and irt_challenge != "above_learner_ability":
         return "ncdm_weak_with_memory"
     if kt_level == "weak":
+        if irt_challenge == "below_learner_ability":
+            return "ncdm_fragile_but_accessible"
+        if mastery is not None and mastery >= 0.25 and memory_pattern != "recent_related_failures":
+            return "ncdm_fragile_developing"
         return "ncdm_unsupported"
     return "ncdm_uncertain"
 
 
-def _state_commitment(readiness: str) -> str:
+def _state_commitment(readiness: str, decision_anchor: dict[str, Any]) -> str:
+    anchor = decision_anchor.get("anchor", "kt_boundary_anchor")
+    direction = decision_anchor.get("direction", "uncertain")
     mapping = {
         "ncdm_supported": (
-            "NCDM strongly supports current-concept readiness. Preserve a concise, "
-            "ordinary student-level successful first attempt unless the item clearly requires unsupported knowledge."
+            "NCDM strongly supports current-concept readiness. Use this as a strong "
+            "correct-leaning anchor, while still checking concrete item and memory evidence."
         ),
         "ncdm_supported_challenged": (
-            "NCDM supports readiness, while IRT marks the item as challenging. Keep success plausible and mainly reduce confidence or reasoning fluency."
+            "NCDM supports readiness while IRT marks challenge. Keep the KT anchor "
+            "primary, but treat the item as a possible boundary case."
         ),
         "ncdm_supported_unstable": (
-            "NCDM supports readiness, but recent related memory is mixed. Preserve success on routine items; express uncertainty through confidence or brief reasoning."
+            "NCDM supports readiness, but recent related memory is mixed. Use the "
+            "anchor direction with lower confidence."
         ),
         "ncdm_developing_supported": (
-            "NCDM indicates developing readiness with favorable challenge or memory evidence. A correct first attempt is plausible with moderate confidence."
+            "NCDM indicates developing readiness with favorable challenge or memory "
+            "evidence. Treat this as a lean-correct rather than strong-correct case."
         ),
         "ncdm_developing": (
-            "NCDM indicates developing readiness. Use partial learner reasoning and moderate confidence without defaulting to failure."
+            "NCDM indicates developing readiness. Treat this as a boundary or "
+            "lean-correct case depending on the KT probability."
         ),
         "ncdm_developing_challenged": (
-            "NCDM indicates developing readiness and IRT marks extra challenge. Use tentative reasoning; both success and mistake remain plausible."
+            "NCDM indicates developing readiness and IRT marks extra challenge. "
+            "Use a boundary decision unless memory strongly supports one side."
         ),
         "ncdm_weak_with_memory": (
-            "NCDM is weak but related memory exists. A cue-based answer can still be correct, usually with modest confidence."
+            "NCDM is weak but related memory exists. Let memory moderate the weak "
+            "anchor, without flipping it automatically."
+        ),
+        "ncdm_fragile_but_accessible": (
+            "NCDM is weak while ability-difficulty evidence suggests accessibility. "
+            "Treat this as a weak or boundary anchor, not as guaranteed success."
+        ),
+        "ncdm_fragile_developing": (
+            "NCDM is fragile rather than absent. Use a lean-incorrect or boundary "
+            "anchor with calibrated confidence."
         ),
         "ncdm_unsupported": (
-            "NCDM gives little support for this concept. Use limited learner reasoning and low confidence; do not create a polished expert solution."
+            "NCDM gives little support for this concept. Use an incorrect-leaning "
+            "anchor unless concrete related memory contradicts it."
         ),
         "ncdm_uncertain": (
-            "Tool evidence is uncertain. Use the remaining memory, profile, and visible item cues while avoiding teacher-style derivation."
+            "Tool evidence is uncertain. Use the remaining memory, profile, and visible item cues."
         ),
     }
-    return mapping.get(readiness, mapping["ncdm_uncertain"])
+    return (
+        f"KT anchor={anchor}, direction={direction}. "
+        + mapping.get(readiness, mapping["ncdm_uncertain"])
+    )
 
 
-def _response_planning(readiness: str) -> str:
-    if readiness in {"ncdm_supported", "ncdm_supported_challenged", "ncdm_supported_unstable"}:
-        return "preserve_ncdm_supported_success"
-    if readiness in {"ncdm_developing_supported", "ncdm_developing"}:
-        return "success_plausible_with_moderate_confidence"
-    if readiness == "ncdm_developing_challenged":
-        return "mixed_attempt_with_reduced_confidence"
-    if readiness == "ncdm_weak_with_memory":
-        return "cue_based_success_possible"
-    return "unsupported_attempt_with_low_confidence"
-
-
-def _four_tier_generation_policy(readiness: str) -> dict[str, str]:
-    policies = {
-        "ncdm_supported": {
-            "answer_policy": "generate_successful_first_attempt_when_item_is_routine",
-            "confidence_policy": "medium_or_high_answer_confidence",
-            "reasoning_policy": "short_fluent_learner_reasoning",
-        },
-        "ncdm_supported_challenged": {
-            "answer_policy": "success_remains_plausible_under_challenge",
-            "confidence_policy": "medium_answer_confidence",
-            "reasoning_policy": "short_reasoning_with_possible_hesitation",
-        },
-        "ncdm_supported_unstable": {
-            "answer_policy": "preserve_success_on_routine_items_allow_minor_uncertainty",
-            "confidence_policy": "medium_answer_confidence",
-            "reasoning_policy": "brief_reasoning_reflecting_unstable_memory",
-        },
-        "ncdm_developing_supported": {
-            "answer_policy": "correct_attempt_plausible_from_memory_or_visible_cues",
-            "confidence_policy": "medium_answer_confidence",
-            "reasoning_policy": "partial_but_sufficient_learner_reasoning",
-        },
-        "ncdm_developing": {
-            "answer_policy": "mixed_outcome_depends_on_item_cues",
-            "confidence_policy": "medium_or_low_answer_confidence",
-            "reasoning_policy": "partial_learner_reasoning",
-        },
-        "ncdm_developing_challenged": {
-            "answer_policy": "mistake_plausible_but_not_required",
-            "confidence_policy": "low_or_medium_answer_confidence",
-            "reasoning_policy": "tentative_partial_reasoning",
-        },
-        "ncdm_weak_with_memory": {
-            "answer_policy": "cue_based_correct_attempt_possible",
-            "confidence_policy": "low_or_medium_answer_confidence",
-            "reasoning_policy": "shallow_memory_based_reasoning",
-        },
-        "ncdm_unsupported": {
-            "answer_policy": "unsupported_attempt_often_incomplete",
-            "confidence_policy": "low_answer_confidence",
-            "reasoning_policy": "limited_learner_reasoning",
-        },
-        "ncdm_uncertain": {
-            "answer_policy": "use_remaining_evidence_without_expert_solution",
-            "confidence_policy": "medium_or_low_answer_confidence",
-            "reasoning_policy": "brief_learner_reasoning",
-        },
+def _decision_anchor(probability: float | None) -> dict[str, Any]:
+    if probability is None:
+        return {
+            "anchor": "kt_unavailable_anchor",
+            "direction": "unknown",
+            "probability": None,
+            "predicted_response": None,
+            "confidence_band": "unavailable",
+        }
+    p = min(1.0, max(0.0, float(probability)))
+    if p >= 0.75:
+        anchor = "kt_strong_correct_anchor"
+        direction = "correct"
+        confidence = "strong"
+    elif p >= 0.60:
+        anchor = "kt_lean_correct_anchor"
+        direction = "correct"
+        confidence = "moderate"
+    elif p >= 0.45:
+        anchor = "kt_boundary_anchor"
+        direction = "uncertain"
+        confidence = "uncertain"
+    elif p >= 0.30:
+        anchor = "kt_lean_incorrect_anchor"
+        direction = "incorrect"
+        confidence = "moderate"
+    else:
+        anchor = "kt_strong_incorrect_anchor"
+        direction = "incorrect"
+        confidence = "strong"
+    return {
+        "anchor": anchor,
+        "direction": direction,
+        "probability": round(p, 3),
+        "predicted_response": int(p >= 0.5),
+        "confidence_band": confidence,
     }
+
+
+def _four_tier_generation_policy(decision_anchor: dict[str, Any]) -> dict[str, str]:
+    anchor = str(decision_anchor.get("anchor") or "kt_boundary_anchor")
+    if anchor == "kt_strong_correct_anchor":
+        answer_policy = "follow_strong_correct_anchor_unless_specific_conflict"
+        confidence_policy = "medium_or_high_answer_confidence"
+        reasoning_policy = "short_fluent_learner_reasoning"
+    elif anchor == "kt_lean_correct_anchor":
+        answer_policy = "lean_correct_with_item_and_memory_check"
+        confidence_policy = "medium_answer_confidence"
+        reasoning_policy = "brief_checked_learner_reasoning"
+    elif anchor == "kt_boundary_anchor":
+        answer_policy = "decide_from_memory_item_demand_and_profile"
+        confidence_policy = "medium_or_low_answer_confidence"
+        reasoning_policy = "partial_learner_reasoning"
+    elif anchor == "kt_lean_incorrect_anchor":
+        answer_policy = "lean_incorrect_unless_specific_memory_supports_success"
+        confidence_policy = "low_or_medium_answer_confidence"
+        reasoning_policy = "limited_or_uncertain_learner_reasoning"
+    elif anchor == "kt_strong_incorrect_anchor":
+        answer_policy = "follow_strong_incorrect_anchor_unless_specific_conflict"
+        confidence_policy = "low_answer_confidence"
+        reasoning_policy = "limited_learner_reasoning"
+    else:
+        answer_policy = "use_remaining_evidence"
+        confidence_policy = "medium_or_low_answer_confidence"
+        reasoning_policy = "brief_learner_reasoning"
     return {
         "tool_conditioning": "ncdm_primary_irt_secondary",
         "output_target": "four_tier_answer_reasoning_confidence",
-        **policies.get(readiness, policies["ncdm_uncertain"]),
+        "answer_policy": answer_policy,
+        "confidence_policy": confidence_policy,
+        "reasoning_policy": reasoning_policy,
     }
 
 

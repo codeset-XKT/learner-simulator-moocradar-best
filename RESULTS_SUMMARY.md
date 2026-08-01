@@ -1,7 +1,7 @@
 # Results Summary
 
 This file records the main fixed-cohort results that should be used for project
-handoff and method comparison. Snapshot date: 2026-07-26.
+handoff and method comparison. Snapshot date: 2026-08-01.
 
 ## Reading The Metrics
 
@@ -10,6 +10,50 @@ handoff and method comparison. Snapshot date: 2026-07-26.
 - Balanced Accuracy, Specificity, and MCC show whether the simulator separates
   correct and incorrect responses.
 - LDE and CDE measure distribution consistency; lower is better.
+
+## MoocRadar Anchor-Consistency 30x10
+
+Current locked version:
+`VERSION_LOCK_MOOCRADAR_ANCHOR_CONSISTENCY.md`
+(`baseline-2026-08-01-moocradar-anchor-consistency-v1`).
+
+Protocol: 90 observed history interactions and 10 teacher-forcing target
+simulations for each of 30 learners. Both cohorts below use only single-answer
+target items.
+
+### Normal Batch
+
+Fixed cohort:
+`experiments/cohorts/moocradar_90_10_30x10_single_answer_targets.json`.
+True target correct rate: 92.33%.
+
+| Method | ACC | F1 | Balanced Acc | Specificity | MCC | LDE | CDE | Predicted Correct Rate | Confusion |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| Ours Full anchor-consistency | 94.65% | 97.14% | 75.18% | 52.17% | 0.580 | 0.040 | 0.112 | 94.33% | TN12 / FP11 / FN5 / TP272 |
+| Ours Full previous Task4 | 95.00% | 97.36% | 67.39% | 34.78% | 0.574 | 0.050 | 0.134 | 97.33% | not recorded here |
+| Probability-sampling baseline | 76.67% | 86.38% | 57.46% | 34.78% | 0.098 | 0.167 | 0.219 | 79.00% | not recorded here |
+| DKT direct | 95.33% | 97.52% | 73.55% | 47.83% | 0.616 | - | - | 95.67% | not recorded here |
+| NCDM direct | 94.33% | 96.97% | 73.01% | 47.83% | 0.545 | - | - | 94.67% | not recorded here |
+
+### Medium-Difficulty Batch
+
+Fixed cohort:
+`experiments/cohorts/moocradar_90_10_30x10_single_answer_medium60_70.json`.
+True target correct rate: 66.00%.
+
+| Method | ACC | F1 | Balanced Acc | Specificity | MCC | LDE | CDE | Predicted Correct Rate | Confusion |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| Ours Full anchor-consistency | 69.57% | 77.97% | 64.19% | 47.06% | 0.298 | 0.157 | 0.301 | 71.67% | TN48 / FP54 / FN37 / TP161 |
+| Ours Full previous Task4 | 68.00% | 78.76% | 57.69% | 25.49% | 0.202 | 0.247 | 0.331 | 84.67% | not recorded here |
+| Probability-sampling baseline | 52.67% | 58.72% | 53.45% | 55.88% | 0.065 | 0.233 | 0.378 | 48.67% | not recorded here |
+| DKT direct | 71.33% | 79.52% | 65.21% | 46.08% | 0.329 | - | - | 74.00% | not recorded here |
+| NCDM direct | 70.67% | 78.43% | 65.89% | 50.98% | 0.329 | - | - | 70.00% | not recorded here |
+
+Interpretation: anchor-consistency fixes the previous Task4 prompt's
+over-correct tendency. On the normal single-answer batch, it beats direct NCDM
+on Balanced Accuracy and Specificity and is close to DKT on ACC/F1. On the
+medium-difficulty batch, it approaches DKT/NCDM balanced performance while
+keeping the LLM as the final Task4 decision source.
 
 ## MoocRadar Medium70 10x10
 
@@ -43,11 +87,6 @@ True target correct rate: 89.00%.
 | Version | ACC | F1 | Balanced Acc | Specificity | MCC | LDE | CDE | Predicted Correct Rate | Confusion |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---|
 | Historical Full + ability summary | 75.00% | 84.28% | 74.00% | 72.73% | 0.328 | 0.190 | 0.398 | 70.00% | TP67 / TN8 / FP3 / FN22 |
-| Balanced-state light Full (locked 2026-07-26) | 75.00% | 84.47% | 70.02% | 63.64% | 0.279 | 0.210 | 0.418 | 72.00% | TP68 / TN7 / FP4 / FN21 |
-| DKT reference | 93.00% | 96.17% | 72.17% | 45.45% | 0.584 | — | — | 94.00% | TP88 / TN5 / FP6 / FN1 |
-| p_correct >= 0.5 | 92.00% | 95.65% | 67.62% | 36.36% | 0.506 | — | — | 95.00% | TP88 / TN4 / FP7 / FN1 |
-| Agent4Edu-style | 89.00% | 94.18% | 50.00% | 0.00% | null | 0.110 | 0.220 | 100.00% | TP89 / TN0 / FP11 / FN0 |
-| Random simulator | 75.00% | 85.03% | 58.07% | 36.36% | 0.122 | 0.190 | 0.228 | 78.00% | not recorded here |
 | Current multi-role Ability Evidence | 78.00% | 86.59% | 71.71% | 63.64% | 0.314 | 0.160 | 0.398 | 75.00% | TP71 / TN7 / FP4 / FN18 |
 | Route Evidence transition | 74.00% | 83.95% | 65.48% | 54.55% | 0.218 | 0.220 | 0.424 | 73.00% | not recorded here |
 | Earlier educational multi-agent | 70.00% | 80.77% | 67.21% | 63.64% | 0.229 | 0.260 | 0.429 | 67.00% | not recorded here |
@@ -56,22 +95,16 @@ True target correct rate: 89.00%.
 Main files:
 
 - `outputs/ablation/moocradar_10x10_ability_summary_no_irt_full_no_ability_profile.json`
-- `locked_results/moocradar_10x10_normal_balanced_state_light_full.json`
-- `locked_results/moocradar_10x10_normal_agent4edu.json`
-- `locked_results/moocradar_10x10_normal_random.json`
 - `outputs/comparison/moocradar_10x10_educational_multi_agent_ability_evidence_teacher_forcing.json`
 - `outputs/comparison/moocradar_10x10_educational_multi_agent_route_evidence_teacher_forcing.json`
 - `outputs/comparison/moocradar_10x10_educational_multi_agent_teacher_forcing.json`
 - `outputs/comparison/moocradar_10x10_multi_role_lpr_teacher_forcing.json`
 
 Interpretation: the historical ability-summary run remains the best MoocRadar
-result for Balanced Accuracy, Specificity, and MCC among the locked LLM
-simulators. The Balanced-state light lock confirms that the active Full branch
-still separates negative samples far better than Agent4Edu-style on this
-positive-skewed batch: Agent4Edu-style matches the all-correct baseline with
-Specificity 0.00%, while Balanced-state light Full reaches Specificity 63.64%.
-DKT remains the strongest pure predictor and should be reported as a reference,
-not as a simulator replacement.
+result for Balanced Accuracy, Specificity, and MCC. The current multi-role
+Ability Evidence version has better ACC, F1, and LDE, so it is not dominated;
+it is weaker mainly because it loses one true negative compared with the
+historical run.
 
 ## XES3G5M 10x10
 

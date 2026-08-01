@@ -12,7 +12,7 @@ def build_profile_system_prompt(profile: dict[str, Any]) -> str:
             "You are simulating one specific high school student's first independent attempt on an online learning platform. "
             "The learner identity is defined by the stable learner profile below, not by generic demographics. "
             "Use ordinary student-level reasoning constrained by this profile and by the item-conditioned evidence in the user prompt. "
-            "Do not turn the learner into an expert tutor, but also do not force an error merely to avoid expert-like behavior.\n\n"
+            "The current-item KT/CDM anchor should guide whether the learner is likely correct or incorrect.\n\n"
             "# Stable Learner Profile #\n"
             f"{stable_profile}"
         )
@@ -31,8 +31,7 @@ def build_profile_system_prompt(profile: dict[str, Any]) -> str:
             "You are simulating one specific high school student's first independent attempt on an online learning platform. "
             "The learner identity is defined by the computed cognitive and ability profiles below, not by a generic agent-style demographic or activity profile. "
             "Use ordinary student-level reasoning constrained by this learner's profile. "
-            "Do not turn the learner into an expert tutor, but also do not force an error merely to avoid expert-like behavior. "
-            "For routine exercises that match the learner's demonstrated proficiency or stable memory, a direct correct first attempt is plausible. "
+            "For routine exercises that match the learner's demonstrated proficiency or stable memory, a direct correct first attempt is plausible but not guaranteed. "
             "Use broad ability traits mainly for unfamiliar, difficult, or transfer-heavy situations; do not let a broad low-ability trait override strong current-concept proficiency. "
             "For unstable, weak, unfamiliar, or attention-limited situations, incomplete reasoning and mistakes remain plausible.\n\n"
             + profile_text
@@ -48,9 +47,8 @@ def build_profile_system_prompt(profile: dict[str, Any]) -> str:
         f"The most frequent historical concept is: {dominant}.\n"
         "The information above is a reduced # profile # and must not be expanded into unobserved cognitive traits.\n"
         "Use ordinary student-level reasoning constrained by this reduced profile. "
-        "Do not turn the learner into an expert tutor, but also do not force an error merely to avoid expert-like behavior. "
         "If the learner has unstable related memory or low proficiency, mistakes remain plausible; "
-        "if the learner has stable related success, a direct correct first attempt is also plausible."
+        "if the learner has stable related success, a direct correct first attempt is also plausible but not guaranteed."
     )
     return base_prompt
 
@@ -105,6 +103,13 @@ def build_action_prompt(
         f"# Textual Content #: {question.get('content', '')}\n\n"
         f"# Options #: {question.get('options', '')}\n"
     )
+    if response_format == "four_tier" and question.get("answer") is not None:
+        chunks.append(
+            "# Reference Answer for Response Rendering #\n"
+            f"{question.get('answer')}\n"
+            "Use the reference answer only after deciding LearnerCorrect, so that a correct simulated learner can submit a well-formed answer. "
+            "Do not use it as a reason to mark every learner correct."
+        )
     if response_format == "answer_only":
         strategy_rule = (
             "3. Infer this learner's likely first-attempt behavior from the provided learner evidence, "
@@ -115,10 +120,10 @@ def build_action_prompt(
         )
         chunks.append(
             "# Answer-only Learner Simulation Protocol #\n"
-            "1. Simulate this learner's single first attempt. Do not act as an expert tutor, and do not deliberately optimize for either correctness or incorrectness.\n"
+            "1. Simulate this learner's single first attempt without deliberately optimizing for either correctness or incorrectness.\n"
             "2. Base the submitted answer only on the learner evidence, memories, non-cognitive state, and visible exercise.\n"
             f"{strategy_rule}"
-            "4. Generate one attempt only. Do not perform a full teacher-style verification pass; brief ordinary student checking is allowed when the profile and confidence support it.\n"
+            "4. Generate one attempt only. Brief ordinary student checking is allowed when the profile and confidence support it.\n"
             f"{error_rule}"
             "6. Do not judge whether the answer is correct. An external evaluator will score it."
         )
@@ -134,35 +139,36 @@ def build_action_prompt(
 
     strategy_rule = (
         "3. Infer this learner's likely first-attempt behavior from the provided learner evidence, memories, "
-        "non-cognitive state, and visible exercise. Do not silently upgrade the learner into an expert solver, "
-        "but do not downgrade stable demonstrated evidence into an unnecessary mistake.\n"
+        "non-cognitive state, and visible exercise. Do not downgrade stable demonstrated evidence into an unnecessary mistake.\n"
     )
     error_rule = (
-        "a second expert pass. Do not intentionally insert an error; simulate only a plausible first attempt.\n"
+        "a separate correction pass. Do not intentionally insert an error; simulate only a plausible first attempt.\n"
     )
     chunks.append(
         "# Four-tier Learner Simulation Protocol #\n"
-        "1. Simulate a single first attempt. Do not act as an expert tutor, and do not deliberately optimize for either correctness or incorrectness.\n"
+        "1. Simulate a single first attempt whose success tendency follows the current-item KT/CDM readiness and learner evidence.\n"
         "2. Base the attempt only on the learner evidence, memories, non-cognitive state, and the visible exercise. "
-        "No sampled response label or reference answer is provided; choose the learner's behavior autonomously.\n"
+        "No sampled response label is provided; if a reference answer is shown, use it only after LearnerCorrect is decided to render a consistent StudentAnswer.\n"
         f"{strategy_rule}"
         "4. Use a two-stage simulation internally: Stage A decides the learner's state from learner evidence, memory, "
         "non-cognitive state, and visible exercise; Stage B produces the answer, reasoning, and confidence from that latent state. "
-        "Stage A must be completed before detailed solving and should not be replaced by a full expert derivation.\n"
+        "Stage A must be completed before answer generation.\n"
         "5. Recent and reinforced records are evidence of the learner's habits. Repeated errors on related concepts should remain plausible; "
         "stable related successes should also remain plausible and should not be erased merely because the prompt asks for learner simulation.\n"
-        "6. Generate the learner's answer and reasoning once. Do not restart with a full expert solution, compare many alternative methods, or perform "
+        "6. Generate the learner's answer and reasoning once from the committed learner state. "
+        "Do not invent omissions or errors to make the response look student-like; mistakes should come only from weak or conflicting learner evidence. "
         f"{error_rule}"
-        "7. StudentReasoning must be a short learner scratch trace, not a full solution. Use at most one recalled rule, one formula, "
-        "one visible cue, or one intermediate operation. Do not output a polished derivation, verification, correction, or teacher-style explanation.\n"
+        "7. StudentReasoning must be a concise learner scratch trace, not a teacher-style full explanation. "
+        "It may include enough recall, formula use, or checking to produce a complete submitted answer when readiness is strong.\n"
         "8. Confidence is from the learner's perspective, not objective correctness. Use these numeric anchors: high=0.80, medium=0.50, low=0.20. "
         "High confidence can still be wrong under misconception; low confidence can still be correct under guessing. "
         "For careless states, do not recheck even when confidence is medium/high.\n"
         "9. Do not intentionally make every weak learner wrong or every strong learner correct. The learner profile changes tendencies, "
-        "reasoning depth, available process, and confidence, not a deterministic label. Strong knowledge evidence with stable related memory "
-        "should usually preserve a successful first attempt unless the visible exercise and learner evidence strongly support a slip. "
-        "Low or fragile evidence should lower, but not eliminate, the chance of a correct attempt.\n"
-        "10. Do not judge whether the response is correct and do not output a correctness label. An external evaluator will score the submitted answer."
+        "reasoning depth, available process, and confidence, not a deterministic label. Strong current-item KT/CDM evidence "
+        "should normally lean correct; weak KT/CDM evidence should normally lean incorrect. Boundary evidence should be resolved using memory, profile, and item demand.\n"
+        "10. LearnerCorrect is the Task4 learner-simulation decision: whether this learner would answer the item correctly. "
+        "Make this decision from KT/CDM current-item readiness, memory, profile, and item evidence before rendering StudentAnswer. "
+        "StudentAnswer is a behavioral record generated after that decision."
     )
     chunks.append(
         "First decide whether the learner attempts the problem. Regardless of this choice, still simulate the answer that the learner would submit."
@@ -170,19 +176,22 @@ def build_action_prompt(
     chunks.append("Choose one knowledge concept tested by this exercise from the following three options:")
     chunks.extend([f"- {concept}" for concept in concept_options])
     chunks.append(
-        "Produce the learner's submitted answer from the inferred learner state. The answer must contain only the final option, value, "
-        "or short response; place only a brief learner scratch trace in the reasoning field. Estimate confidence in each tier independently. "
+        "First decide LearnerCorrect from the inferred learner state. Then produce the learner's submitted answer consistently with that decision. "
+        "The answer must contain only the final option(s), value, "
+        "or short response. If the item wording asks for multiple choices, include all options the learner would submit, separated by commas. "
+        "Place only a concise learner scratch trace in the reasoning field. Estimate confidence in each tier independently. "
         "Do not reveal the private latent state in the final output."
     )
     chunks.append(
         "Output exactly in this format:\n"
         "Attempt: <Yes or No>\n"
         "IdentifiedConcept: <one concept from the provided options>\n"
+        "LearnerCorrect: <Yes or No>\n"
         "StudentAnswer: <the learner's submitted answer only>\n"
         "AnswerConfidence: <0.80 for high, 0.50 for medium, or 0.20 for low>\n"
         "StudentReasoning: <one short learner scratch step, which may be incomplete or mistaken>\n"
         "ReasoningConfidence: <0.80 for high, 0.50 for medium, or 0.20 for low>\n"
-        "Return only these six fields. Do not output the private commitment, correctness, an expert solution, a correction, or markdown formatting."
+        "Return only these seven fields. Do not output the private commitment, correction, or markdown formatting."
     )
     return "\n\n".join(chunks)
 
@@ -194,35 +203,19 @@ def proficiency_context(concept: str, mastery: float) -> dict[str, Any]:
 
 def _format_cognitive_profile(cognitive_profile: dict[str, Any]) -> str:
     control = cognitive_profile.get("control_traits") or {}
-    affective = cognitive_profile.get("cognitive_affective_proxies") or {}
-    error = cognitive_profile.get("error_generation_traits") or {}
     transfer = cognitive_profile.get("transfer_traits") or {}
     return (
         "# Computed Cognitive Profile #\n"
         "The following profile is computed from observed historical responses only. "
-        "Affective fields are behavioral proxies, not ground-truth emotion labels.\n"
         f"- control: overall_success={control.get('overall_success_level', 'unknown')} "
         f"({control.get('overall_success_rate')}), recent_success={control.get('recent_success_level', 'unknown')} "
         f"({control.get('recent_success_rate')}), trend={control.get('success_trend_level', 'unknown')} "
         f"({control.get('success_trend')}), stability={control.get('mastery_stability_level', 'unknown')} "
         f"({control.get('mastery_stability')})\n"
-        f"- cognitive-affective proxies: concentration={affective.get('concentration_level', 'unknown')} "
-        f"({affective.get('concentration_proxy')}), frustration={affective.get('frustration_level', 'unknown')} "
-        f"({affective.get('frustration_risk')}), confusion={affective.get('confusion_level', 'unknown')} "
-        f"({affective.get('confusion_risk')}), boredom={affective.get('boredom_level', 'unknown')} "
-        f"({affective.get('boredom_risk')})\n"
-        f"- error generation: carelessness={error.get('carelessness_level', 'unknown')} "
-        f"({error.get('carelessness_tendency')}), guessing={error.get('guessing_level', 'unknown')} "
-        f"({error.get('guessing_tendency')}), misconception_persistence={error.get('misconception_persistence_level', 'unknown')} "
-        f"({error.get('misconception_persistence')}), error_recovery={error.get('error_recovery_level', 'unknown')} "
-        f"({error.get('error_recovery_rate')})\n"
         f"- transfer adaptation: same_parent_transfer={transfer.get('same_parent_transfer_level', 'unknown')} "
-        f"({transfer.get('same_parent_transfer_success')}), transfer_fragility="
-        f"{transfer.get('transfer_fragility_level', 'unknown')} ({transfer.get('transfer_fragility')})\n"
-        "Use this computed cognitive profile to constrain attention stability, error tendencies, confidence, "
-        "and transfer behavior during first-attempt simulation. Treat affective and error fields as broad tendencies, "
-        "not automatic error triggers. Preserve plausible mistakes when recent performance, repeated errors, confusion, "
-        "or fragile transfer indicate instability; preserve plausible success when current proficiency and stable memory support it."
+        f"({transfer.get('same_parent_transfer_success')})\n"
+        "Use this computed cognitive profile to calibrate confidence and reasoning style. "
+        "Current KT/CDM proficiency and related memory are more specific evidence for the current item."
     )
 
 
@@ -265,11 +258,11 @@ def _format_tendency_calibration(calibration: dict[str, Any]) -> str:
 
 
 def _format_behavior_state(factors: dict[str, float]) -> str:
+    attention = _three_level(float(factors.get("attention", 0.7)), 0.55, 0.8)
     return (
-        f"- attention: {_three_level(float(factors.get('attention', 0.7)), 0.55, 0.8)}\n"
-        f"- fatigue: {_three_level(float(factors.get('fatigue', 0.2)), 0.15, 0.35)}\n"
-        f"- carelessness: {_three_level(float(factors.get('carelessness', 0.1)), 0.08, 0.2)}\n"
-        f"- guessing tendency: {_three_level(float(factors.get('guessing', 0.1)), 0.08, 0.2)}"
+        f"- observed working focus proxy: {attention}\n"
+        "- role: confidence_and_reasoning_style_calibration_only\n"
+        "- boundary: do not use this proxy to override KT/CDM readiness."
     )
 
 

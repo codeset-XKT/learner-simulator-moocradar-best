@@ -175,18 +175,16 @@ def main() -> None:
     }
     assert step["learner_profile_encoder"]["irt_ability_difficulty_evidence"]["module"] == "irt_ability_difficulty_evidence"
     assert step["learner_profile_encoder"]["learning_tool_state"]["module"] == "learning_tool_state_encoder"
-    assert "# KT Proficiency State #" in step["response_agent_prompt"]
+    assert "# KT/CDM Response State #" in step["response_agent_prompt"]
+    assert "# KT Decision Anchor #" in step["response_agent_prompt"]
     assert "# IRT Ability-Difficulty Evidence #" in step["response_agent_prompt"]
     assert "# Learning Tool State #" in step["response_agent_prompt"]
     assert "# Agent-style Internal Task Protocol #" in step["response_agent_prompt"]
     assert "Agent4Edu Task4 predicts Yes/No correctness" in step["response_agent_prompt"]
-    assert "# Knowledge Proficiency #" in step["response_agent_prompt"]
     assert "# KT State Guidance #" in step["response_agent_prompt"]
+    assert "primary symmetric prior for LearnerCorrect" in step["response_agent_prompt"]
     assert "sampled response label" in step["response_agent_prompt"]
     assert "rasch_expected_success" not in step["response_agent_prompt"]
-    assert "kt_predicted_response" not in step["response_agent_prompt"]
-    assert "predicted_response" not in step["response_agent_prompt"]
-    assert "kt_decision_anchor" not in step["response_agent_prompt"]
     assert "p_correct" not in step["response_agent_prompt"]
     assert "learner_evidence_profile" not in step
     assert "cognitive_profile_evidence" not in step

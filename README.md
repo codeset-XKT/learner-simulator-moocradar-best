@@ -90,17 +90,20 @@ memory before the next target step.
 
 ## Locked Baselines
 
-Two historical baselines are fixed and should be read before changing prompt
-logic, profile modules, simulator decision logic, or ablation wiring:
+Three baselines are fixed and should be read before changing prompt logic,
+profile modules, simulator decision logic, or ablation wiring:
 
 - `VERSION_LOCK.md`: FoundationalAssist calibrated Full baseline,
   `baseline-2026-07-04-foundationalassist-calibrated-v1`.
 - `VERSION_LOCK_MOOCRADAR.md`: historical MoocRadar ability-summary baseline,
   `baseline-2026-07-04-moocradar-ability-summary-no-irt-v1`.
+- `VERSION_LOCK_MOOCRADAR_ANCHOR_CONSISTENCY.md`: current MoocRadar
+  anchor-consistency Full simulator,
+  `baseline-2026-08-01-moocradar-anchor-consistency-v1`.
 
-The current result ledger is `RESULTS_SUMMARY.md`. The latest medium-correct-rate
-MoocRadar fixed-cohort result is documented in
-`docs/moocradar_medium70_balanced_state.md`.
+The current result ledger is `RESULTS_SUMMARY.md`. The latest locked MoocRadar
+single-answer 30x10 normal and medium-difficulty results are documented in
+`VERSION_LOCK_MOOCRADAR_ANCHOR_CONSISTENCY.md`.
 
 ## Datasets
 

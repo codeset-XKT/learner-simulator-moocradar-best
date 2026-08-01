@@ -15,16 +15,27 @@ def parse_four_tier_response(raw: str | None) -> dict[str, Any] | None:
     labels = [
         "Attempt:",
         "IdentifiedConcept:",
+        "LearnerCorrect:",
         "StudentAnswer:",
         "AnswerConfidence:",
         "StudentReasoning:",
         "ReasoningConfidence:",
     ]
-    if not all(label.lower() in raw.lower() for label in labels):
+    required_labels = [
+        "Attempt:",
+        "IdentifiedConcept:",
+        "StudentAnswer:",
+        "AnswerConfidence:",
+        "StudentReasoning:",
+        "ReasoningConfidence:",
+    ]
+    has_learner_correct = "learnercorrect:" in raw.lower()
+    active_labels = labels if has_learner_correct else required_labels
+    if not all(label.lower() in raw.lower() for label in required_labels):
         return None
 
     normalized = raw
-    for label in labels:
+    for label in active_labels:
         normalized = re.sub(
             re.escape(label),
             label,
@@ -36,16 +47,22 @@ def parse_four_tier_response(raw: str | None) -> dict[str, Any] | None:
     keys = [
         "attempt",
         "identified_concept",
-        "student_answer",
-        "answer_confidence",
-        "student_reasoning",
-        "reasoning_confidence",
     ]
-    for index, (label, key) in enumerate(zip(labels, keys)):
+    if has_learner_correct:
+        keys.append("learner_correct")
+    keys.extend(
+        [
+            "student_answer",
+            "answer_confidence",
+            "student_reasoning",
+            "reasoning_confidence",
+        ]
+    )
+    for index, (label, key) in enumerate(zip(active_labels, keys)):
         part = normalized.split(label, 1)[1]
         next_positions = [
             part.find(next_label)
-            for next_label in labels[index + 1 :]
+            for next_label in active_labels[index + 1 :]
             if part.find(next_label) >= 0
         ]
         if next_positions:
@@ -53,6 +70,8 @@ def parse_four_tier_response(raw: str | None) -> dict[str, Any] | None:
         parsed[key] = part.strip().strip('"')
 
     parsed["attempt"] = _normalize_attempt(parsed["attempt"])
+    if has_learner_correct:
+        parsed["learner_correct"] = _yes_no(parsed.get("learner_correct"))
     parsed["answer_confidence"] = _confidence(parsed["answer_confidence"])
     parsed["reasoning_confidence"] = _confidence(parsed["reasoning_confidence"])
     parsed["solution_process"] = parsed["student_reasoning"]
@@ -252,3 +271,12 @@ def _confidence(value: Any) -> float:
 def _normalize_attempt(value: Any) -> str:
     text = str(value).strip().lower()
     return "no" if text.startswith(("no", "n")) else "yes"
+
+
+def _yes_no(value: Any) -> int | None:
+    text = str(value or "").strip().lower()
+    if text.startswith(("yes", "y", "true", "correct", "1")):
+        return 1
+    if text.startswith(("no", "n", "false", "incorrect", "0")):
+        return 0
+    return None

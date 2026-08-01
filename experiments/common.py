@@ -53,6 +53,14 @@ def add_shared_arguments(parser: argparse.ArgumentParser) -> None:
         ),
     )
     parser.add_argument(
+        "--dneuralcdm-checkpoint",
+        default=None,
+        help=(
+            "Optional DNeuralCDM best_model.pt checkpoint. Multi-role Full uses it "
+            "to compute current-item response probability before each simulated step."
+        ),
+    )
+    parser.add_argument(
         "--mikt-proficiency",
         default=None,
         help=(
@@ -231,6 +239,7 @@ def simulator_kwargs(args: argparse.Namespace) -> dict[str, Any]:
         "long_threshold": 3,
         "behavior_control": True,
         "dneuralcdm_proficiency_path": args.dneuralcdm_proficiency,
+        "dneuralcdm_checkpoint_path": args.dneuralcdm_checkpoint,
         "mikt_proficiency_path": args.mikt_proficiency,
         "dkt_proficiency_path": args.dkt_proficiency,
     }

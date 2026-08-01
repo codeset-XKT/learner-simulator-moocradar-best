@@ -1,0 +1,55 @@
+{
+  "cohort_file": "experiments\\cohorts\\moocradar_90_10_30x10_single_answer_medium60_70.json",
+  "history_steps": 90,
+  "target_steps": 10,
+  "users": 30,
+  "threshold": 0.5,
+  "dkt_checkpoint": "outputs\\dkt\\moocradar_full_e50_h100\\best_model.pt",
+  "ncdm_checkpoint": "outputs\\dneuralcdm\\moocradar_90_10_10x10_medium70_e30_d32_h64\\best_model.pt",
+  "dkt_skipped_mapped_steps": 0,
+  "ncdm_skipped_mapped_steps": 0,
+  "dkt_direct_teacher_forcing": {
+    "count": 300,
+    "real_correct_rate": 0.66,
+    "predicted_correct_rate_at_threshold": 0.74,
+    "mean_probability": 0.7041299974390616,
+    "acc": 0.7133333333333334,
+    "f1": 0.7952380952380952,
+    "balanced_acc": 0.6521093285799168,
+    "sensitivity": 0.8434343434343434,
+    "specificity": 0.46078431372549017,
+    "mcc": 0.3285449056074048,
+    "auc": 0.7270251534957417,
+    "mae": 0.32307162574492393,
+    "rmse": 0.45917991438613276,
+    "brier": 0.21084619377565622,
+    "confusion": {
+      "tn": 47,
+      "fp": 55,
+      "fn": 31,
+      "tp": 167
+    }
+  },
+  "ncdm_direct_teacher_forcing": {
+    "count": 300,
+    "real_correct_rate": 0.66,
+    "predicted_correct_rate_at_threshold": 0.7,
+    "mean_probability": 0.6877061115531251,
+    "acc": 0.7066666666666667,
+    "f1": 0.7843137254901961,
+    "balanced_acc": 0.6589423648247177,
+    "sensitivity": 0.8080808080808081,
+    "specificity": 0.5098039215686274,
+    "mcc": 0.32860294017798714,
+    "auc": 0.7291542879778173,
+    "mae": 0.3063368939654902,
+    "rmse": 0.4882505661219331,
+    "brier": 0.2383886153183882,
+    "confusion": {
+      "tn": 52,
+      "fp": 50,
+      "fn": 38,
+      "tp": 160
+    }
+  }
+}

@@ -10,6 +10,7 @@ from learner_simulator.agent4edu_prompt import (
 )
 from learner_simulator.behavior import non_cognitive_factors
 from learner_simulator.data import clean_sequence, sequence_row_from_steps
+from learner_simulator.dneuralcdm import DNeuralCDMResponsePredictor
 from learner_simulator.educational_multi_agent_prompt import (
     build_cognitive_profile_view,
     build_four_tier_response_record,
@@ -53,6 +54,12 @@ class MultiRoleLearnerSimulator(RandomLearnerSimulator):
     5. Four-tier Response Simulator: learner-level answer generation; external
        diagnostic scoring is used only for evaluation.
     """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.dneuralcdm_response_predictor = DNeuralCDMResponsePredictor(
+            self.dneuralcdm_checkpoint_path
+        )
 
     def simulate_sequence(
         self,
@@ -113,8 +120,10 @@ class MultiRoleLearnerSimulator(RandomLearnerSimulator):
         profile_context["historical_reflective_calibration"] = historical_reflection
         historical_policy = historical_reflection.get("adaptive_policy") or {}
 
+        ncdm_response_prefix = list(clean_sequence(history_row)) if history_row is not None else []
+        target_sequence = clean_sequence(row)
         simulated_steps: list[dict[str, Any]] = []
-        for step in clean_sequence(row):
+        for step in target_sequence:
             step_start = time.perf_counter()
             qid = step["qid"]
             cid = step["cid"]
@@ -130,10 +139,19 @@ class MultiRoleLearnerSimulator(RandomLearnerSimulator):
                 ncdm_state=ncdm_state,
                 include_dkt_predictor=include_dkt_predictor,
             )
+            ncdm_response_probability = (
+                self._ncdm_response_probability(
+                    prefix_steps=ncdm_response_prefix,
+                    qid=qid,
+                    cid=cid,
+                )
+                if include_proficiency and not include_dkt_predictor
+                else None
+            )
             if knowledge_state_probability is None:
                 knowledge_state_probability = float(dynamic_mastery_before)
                 knowledge_state_source = "dynamic_fallback"
-            ncdm_probability = (
+            ncdm_mastery_probability = (
                 round(float(knowledge_state_probability), 6)
                 if knowledge_state_source == "dneuralcdm_online"
                 else None
@@ -143,10 +161,13 @@ class MultiRoleLearnerSimulator(RandomLearnerSimulator):
                 if include_dkt_predictor and knowledge_state_source == "dkt"
                 else None
             )
-            predictive_mastery = (
-                float(knowledge_state_probability)
+            current_item_probability = (
+                float(ncdm_response_probability)
+                if ncdm_response_probability is not None
+                else float(knowledge_state_probability)
             )
-            kt_state_probability = float(predictive_mastery)
+            predictive_mastery = current_item_probability
+            kt_state_probability = float(current_item_probability)
             dkt_predicted_response = (
                 int(external_kt_raw_probability >= 0.5)
                 if include_dkt_predictor and external_kt_raw_probability is not None
@@ -162,6 +183,17 @@ class MultiRoleLearnerSimulator(RandomLearnerSimulator):
             prompt_components = dict(components)
             prompt_components["mastery"] = round(float(predictive_mastery), 6)
             prompt_components["mastery_source"] = knowledge_state_source
+            prompt_components["concept_mastery"] = round(float(knowledge_state_probability), 6)
+            prompt_components["current_item_response_probability"] = (
+                round(float(ncdm_response_probability), 6)
+                if ncdm_response_probability is not None
+                else None
+            )
+            prompt_components["current_item_response_source"] = (
+                "dneuralcdm_response_predictor"
+                if ncdm_response_probability is not None
+                else knowledge_state_source
+            )
             visible_components = _visible_probability_components(
                 prompt_components,
                 include_proficiency=include_proficiency,
@@ -201,6 +233,21 @@ class MultiRoleLearnerSimulator(RandomLearnerSimulator):
             if include_proficiency:
                 proficiency = proficiency_context(true_concept, predictive_mastery)
                 proficiency["source"] = prompt_components["mastery_source"]
+                proficiency["response_probability"] = (
+                    round(float(ncdm_response_probability), 6)
+                    if ncdm_response_probability is not None
+                    else round(float(predictive_mastery), 6)
+                )
+                proficiency["response_probability_source"] = (
+                    "dneuralcdm_response_predictor"
+                    if ncdm_response_probability is not None
+                    else prompt_components["mastery_source"]
+                )
+                proficiency["concept_mastery_value"] = round(
+                    float(knowledge_state_probability),
+                    6,
+                )
+                proficiency["concept_mastery_source"] = knowledge_state_source
             learning_tool_state = (
                 build_learning_tool_state(
                     question=qmeta_for_modules,
@@ -254,6 +301,20 @@ class MultiRoleLearnerSimulator(RandomLearnerSimulator):
                 "kt_state_probability": round(kt_state_probability, 6),
                 "knowledge_state_source": knowledge_state_source,
                 "knowledge_state_probability": round(kt_state_probability, 6),
+                "concept_mastery_probability": round(
+                    float(knowledge_state_probability),
+                    6,
+                ),
+                "current_item_response_probability": (
+                    round(float(ncdm_response_probability), 6)
+                    if ncdm_response_probability is not None
+                    else None
+                ),
+                "current_item_response_source": (
+                    "dneuralcdm_response_predictor"
+                    if ncdm_response_probability is not None
+                    else None
+                ),
                 "dynamic_mastery_internal": round(float(dynamic_mastery_before), 6),
                 "external_proficiency_source": knowledge_state_source,
                 "dkt_predictor_in_prompt": include_dkt_predictor,
@@ -285,10 +346,30 @@ class MultiRoleLearnerSimulator(RandomLearnerSimulator):
                     else None
                 ),
                 "dkt_predicted_response": dkt_predicted_response,
-                "ncdm_correct_probability": ncdm_probability,
+                "ncdm_mastery_value": ncdm_mastery_probability,
+                "ncdm_mastery_threshold_response": (
+                    int(ncdm_mastery_probability >= 0.5)
+                    if ncdm_mastery_probability is not None
+                    else None
+                ),
+                "ncdm_correct_probability": (
+                    round(float(ncdm_response_probability), 6)
+                    if ncdm_response_probability is not None
+                    else ncdm_mastery_probability
+                ),
                 "ncdm_predicted_response": (
-                    int(ncdm_probability >= 0.5)
-                    if ncdm_probability is not None
+                    int(
+                        (
+                            ncdm_response_probability
+                            if ncdm_response_probability is not None
+                            else ncdm_mastery_probability
+                        )
+                        >= 0.5
+                    )
+                    if (
+                        ncdm_response_probability is not None
+                        or ncdm_mastery_probability is not None
+                    )
                     else None
                 ),
                 "non_cognitive_factors": active_behavior,
@@ -354,6 +435,7 @@ class MultiRoleLearnerSimulator(RandomLearnerSimulator):
                         tendency_calibration=tendency_calibration,
                         irt_evidence=irt_evidence,
                         learning_tool_state=learning_tool_state,
+                        historical_reflection=historical_reflection,
                     )
                     if include_item_conditioned_ability
                     else {
@@ -429,14 +511,30 @@ class MultiRoleLearnerSimulator(RandomLearnerSimulator):
                             reference_reasoning=str(qmeta.get("analysis", "")),
                         )
                         answer_correct = four_tier.get("answer_correct")
+                        learner_correct = action.get("learner_correct")
+                        primary_correct = (
+                            learner_correct
+                            if learner_correct is not None
+                            else answer_correct
+                        )
+                        step_result["task4_learner_correct"] = learner_correct
+                        step_result["four_tier_answer_correct"] = answer_correct
+                        step_result["task4_decision_source"] = (
+                            "learner_correct"
+                            if learner_correct is not None
+                            else "answer_scoring_fallback"
+                        )
                     else:
                         answer_correct = compare_answers(
                             action.get("student_answer"),
                             qmeta.get("answer"),
                         )
+                        learner_correct = None
+                        primary_correct = answer_correct
                         step_result["ablation"] = "no_four_tier"
-                    if answer_correct is not None:
-                        final_correct = int(answer_correct)
+                        step_result["task4_decision_source"] = "answer_scoring"
+                    if primary_correct is not None:
+                        final_correct = int(primary_correct)
                         answer_confidence = (
                             four_tier["answer_confidence"]
                             if four_tier is not None
@@ -454,8 +552,13 @@ class MultiRoleLearnerSimulator(RandomLearnerSimulator):
                         action["error_type"] = "none" if final_correct else (
                             four_tier["diagnosis"]
                             if four_tier is not None
-                            else "answer_only_incorrect"
+                            else "task4_predicted_incorrect"
                         )
+                        if four_tier is not None:
+                            action["four_tier_answer_correct"] = answer_correct
+                            action["task4_decision_source"] = step_result[
+                                "task4_decision_source"
+                            ]
                         step_result["simulated_response"] = final_correct
                         step_result["llm_behavior_correct"] = final_correct
                         step_result["dkt_conditioning"] = dkt_conditioning
@@ -530,6 +633,12 @@ class MultiRoleLearnerSimulator(RandomLearnerSimulator):
                 memory_record["model_simulated_response"] = step_result["simulated_response"]
                 memory_record["simulated_response"] = feedback_response
             memory.observe(memory_record)
+            ncdm_response_prefix.append(
+                {
+                    **step,
+                    "response": feedback_response,
+                }
+            )
             simulated_steps.append(step_result)
 
         summary = build_sequence_summary(uid, simulated_steps)
@@ -541,6 +650,9 @@ class MultiRoleLearnerSimulator(RandomLearnerSimulator):
         summary["feedback_mode"] = feedback_mode
         summary["historical_reflective_calibration"] = historical_reflection
         summary["dkt_predictor_in_prompt"] = include_dkt_predictor
+        summary["dneuralcdm_response_predictor_available"] = (
+            self.dneuralcdm_response_predictor.available()
+        )
         return summary
 
     @staticmethod
@@ -578,14 +690,18 @@ class MultiRoleLearnerSimulator(RandomLearnerSimulator):
                 "objective": "generate learner answer, reasoning, and metacognitive confidence",
                 "attempt": action.get("attempt") if action else None,
                 "student_answer": action.get("student_answer") if action else None,
+                "learner_correct": action.get("learner_correct") if action else None,
                 "student_reasoning": action.get("student_reasoning") if action else None,
                 "answer_confidence": action.get("answer_confidence") if action else None,
                 "reasoning_confidence": (
                     action.get("reasoning_confidence") if action else None
                 ),
                 "answer_correct": four_tier.get("answer_correct") if four_tier else None,
+                "task4_decision_source": (
+                    action.get("task4_decision_source") if action else None
+                ),
                 "diagnosis": four_tier.get("diagnosis") if four_tier else None,
-                "evaluation": "external_answer_scoring_and_confidence_calibration",
+                "evaluation": "learner_correct_for_task4_answer_scoring_for_diagnostics",
             },
         }
 
@@ -798,6 +914,23 @@ class MultiRoleLearnerSimulator(RandomLearnerSimulator):
             return "dneuralcdm_online"
         return "dynamic_fallback"
 
+    def _ncdm_response_probability(
+        self,
+        prefix_steps: list[dict[str, Any]],
+        qid: int,
+        cid: int,
+    ) -> float | None:
+        if not self.dneuralcdm_response_predictor.available():
+            return None
+        value = self.dneuralcdm_response_predictor.probability(
+            prefix_steps=prefix_steps,
+            target_qid=int(qid),
+            target_cid=int(cid),
+        )
+        if value is None:
+            return None
+        return min(1.0, max(0.0, float(value)))
+
     def _update_ncdm_runtime_state(
         self,
         ncdm_state: dict[int, float],
@@ -892,11 +1025,21 @@ class MultiRoleLearnerSimulator(RandomLearnerSimulator):
             include_dkt_predictor=include_dkt_predictor,
         )
         replay_ncdm_state = self._ncdm_state_at_history_prefix(uid, len(prefix))
+        replay_response_prefix = list(prefix)
         records: list[dict[str, Any]] = []
         for step in replay:
             qid = int(step["qid"])
             cid = int(step["cid"])
             components = self.probability_components(uid, qid, cid, replay_state)
+            response_probability = (
+                self._ncdm_response_probability(
+                    prefix_steps=replay_response_prefix,
+                    qid=qid,
+                    cid=cid,
+                )
+                if not include_dkt_predictor
+                else None
+            )
             proficiency = self._knowledge_state_probability(
                 uid,
                 cid,
@@ -904,7 +1047,9 @@ class MultiRoleLearnerSimulator(RandomLearnerSimulator):
                 include_dkt_predictor=include_dkt_predictor,
             )
             probability = (
-                float(proficiency)
+                float(response_probability)
+                if response_probability is not None
+                else float(proficiency)
                 if proficiency is not None
                 else float(components.get("mastery", 0.5))
             )
@@ -920,6 +1065,8 @@ class MultiRoleLearnerSimulator(RandomLearnerSimulator):
                     "prediction_source": (
                         "dkt"
                         if include_dkt_predictor and self.dkt_proficiency.available()
+                        else "dneuralcdm_response_replay"
+                        if response_probability is not None
                         else "dneuralcdm_replay"
                         if replay_ncdm_state is not None
                         else "dynamic_fallback"
@@ -934,6 +1081,7 @@ class MultiRoleLearnerSimulator(RandomLearnerSimulator):
                     cid,
                     int(step["response"]),
                 )
+            replay_response_prefix.append(step)
         return build_historical_reflective_calibration(history_row, records)
 
 

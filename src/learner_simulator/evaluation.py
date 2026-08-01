@@ -69,6 +69,28 @@ def evaluate_steps(steps: list[dict[str, Any]], threshold: float = 0.5) -> dict[
             }
         )
 
+    ncdm_prob = _optional_probabilities(steps, "ncdm_correct_probability")
+    if ncdm_prob is not None:
+        ncdm_pred = [int(prob >= threshold) for prob in ncdm_prob]
+        metrics.update(
+            {
+                "ncdm_predicted_correct_rate": round(_mean(ncdm_prob), 6),
+                "ncdm_auc": _round_or_none(binary_auc(y_true, ncdm_prob)),
+                "ncdm_acc_at_threshold": round(accuracy(y_true, ncdm_pred), 6),
+                "ncdm_f1_at_threshold": round(f1_score(y_true, ncdm_pred), 6),
+                "ncdm_balanced_accuracy": _round_or_none(
+                    balanced_accuracy(y_true, ncdm_pred)
+                ),
+                "ncdm_specificity": _round_or_none(specificity(y_true, ncdm_pred)),
+                "ncdm_mcc": _round_or_none(matthews_corrcoef(y_true, ncdm_pred)),
+                "ncdm_confusion": confusion_matrix(y_true, ncdm_pred),
+                "ncdm_mae": round(mae(y_true, ncdm_prob), 6),
+                "ncdm_rmse": round(rmse(y_true, ncdm_prob), 6),
+                "ncdm_nll": round(nll(y_true, ncdm_prob), 6),
+                "ncdm_brier": round(brier_score(y_true, ncdm_prob), 6),
+            }
+        )
+
     kt_state_prob = _optional_probabilities(steps, "kt_state_probability")
     if kt_state_prob is not None:
         kt_state_pred = [int(prob >= threshold) for prob in kt_state_prob]

@@ -74,6 +74,7 @@ class RandomLearnerSimulator:
         long_threshold: int = 3,
         behavior_control: bool = True,
         dneuralcdm_proficiency_path: str | None = None,
+        dneuralcdm_checkpoint_path: str | None = None,
         mikt_proficiency_path: str | None = None,
         dkt_proficiency_path: str | None = None,
     ) -> None:
@@ -87,6 +88,7 @@ class RandomLearnerSimulator:
         self.short_window = short_window
         self.long_threshold = long_threshold
         self.behavior_control = behavior_control
+        self.dneuralcdm_checkpoint_path = dneuralcdm_checkpoint_path
         self.dneuralcdm_proficiency = DNeuralCDMProficiency(dneuralcdm_proficiency_path)
         self.mikt_proficiency = MIKTProficiency(mikt_proficiency_path)
         self.dkt_proficiency = DKTProficiency(dkt_proficiency_path)

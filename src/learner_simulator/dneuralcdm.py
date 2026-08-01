@@ -168,6 +168,90 @@ if nn is not None:
                 weight.add_(torch.relu(torch.neg(weight)))
 
 
+class DNeuralCDMResponsePredictor:
+    """Online next-item response predictor from a trained DNeuralCDM checkpoint."""
+
+    def __init__(self, checkpoint_path: str | Path | None) -> None:
+        self.path = Path(checkpoint_path) if checkpoint_path else None
+        self.model: Any = None
+        self.checkpoint: dict[str, Any] = {}
+        self.exercise_id_map: dict[str, int] = {}
+        self.concept_id_map: dict[str, int] = {}
+        if self.path is not None:
+            self._load(self.path)
+
+    def _load(self, checkpoint_path: Path) -> None:
+        require_torch()
+        if not checkpoint_path.exists():
+            return
+        checkpoint = torch.load(checkpoint_path, map_location="cpu")
+        self.checkpoint = checkpoint
+        self.exercise_id_map = {
+            str(key): int(value)
+            for key, value in checkpoint["exercise_id_map"].items()
+        }
+        self.concept_id_map = {
+            str(key): int(value)
+            for key, value in checkpoint["concept_id_map"].items()
+        }
+        model = DNeuralCDM(
+            checkpoint["num_exercises"],
+            checkpoint["num_know"],
+            int(checkpoint.get("embedding_dim", 128)),
+            int(checkpoint.get("hidden_dim", 128)),
+        )
+        model.load_state_dict(checkpoint["model_state_dict"])
+        model.eval()
+        self.model = model
+
+    def available(self) -> bool:
+        return self.model is not None and bool(self.checkpoint)
+
+    def probability(
+        self,
+        prefix_steps: list[dict[str, Any]],
+        target_qid: int,
+        target_cid: int,
+    ) -> float | None:
+        """Predict P(correct) for target item from previous observed/simulated steps."""
+
+        if not self.available() or not prefix_steps:
+            return None
+        target_exercise = self.exercise_id_map.get(str(target_qid))
+        target_concept = self.concept_id_map.get(str(target_cid))
+        if target_exercise is None or target_concept is None:
+            return None
+
+        encoded: list[tuple[int, int, int]] = []
+        for step in prefix_steps:
+            exercise_index = self.exercise_id_map.get(str(step["qid"]))
+            concept_index = self.concept_id_map.get(str(step["cid"]))
+            if exercise_index is None or concept_index is None:
+                continue
+            encoded.append((exercise_index, concept_index, int(step["response"])))
+        if not encoded:
+            return None
+
+        length = len(encoded)
+        checkpoint = self.checkpoint
+        inputs = torch.zeros((1, length, checkpoint["num_know"] * 2), dtype=torch.float32)
+        exercises = torch.zeros(
+            (1, length, checkpoint["num_exercises"]),
+            dtype=torch.float32,
+        )
+        masks = torch.zeros((1, length, checkpoint["num_know"]), dtype=torch.float32)
+        for index, (exercise_index, concept_index, response) in enumerate(encoded):
+            next_exercise = encoded[index + 1][0] if index + 1 < length else target_exercise
+            next_concept = encoded[index + 1][1] if index + 1 < length else target_concept
+            inputs[0, index, (2 * concept_index) + (0 if response == 1 else 1)] = 1.0
+            exercises[0, index, next_exercise] = 1.0
+            masks[0, index, next_concept] = 1.0
+
+        with torch.no_grad():
+            probabilities, _, _ = self.model(inputs, exercises, masks)
+        return float(probabilities.reshape(-1)[-1].item())
+
+
 class DNeuralCDMSequenceDataset:
     def __init__(
         self,
