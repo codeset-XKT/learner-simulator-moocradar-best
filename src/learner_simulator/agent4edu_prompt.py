@@ -12,7 +12,7 @@ def build_profile_system_prompt(profile: dict[str, Any]) -> str:
             "You are simulating one specific high school student's first independent attempt on an online learning platform. "
             "The learner identity is defined by the stable learner profile below, not by generic demographics. "
             "Use ordinary student-level reasoning constrained by this profile and by the item-conditioned evidence in the user prompt. "
-            "The current-item KT/CDM anchor should guide whether the learner is likely correct or incorrect.\n\n"
+            "Current-item knowledge-state evidence should guide whether the learner is likely correct or incorrect.\n\n"
             "# Stable Learner Profile #\n"
             f"{stable_profile}"
         )
@@ -63,6 +63,7 @@ def build_action_prompt(
     response_format: str = "four_tier",
     cognitive_strategy: dict[str, Any] | None = None,
     tendency_calibration: dict[str, Any] | None = None,
+    include_profile_evidence: bool = True,
 ) -> str:
     chunks: list[str] = []
     if short_memory:
@@ -103,14 +104,14 @@ def build_action_prompt(
         f"# Textual Content #: {question.get('content', '')}\n\n"
         f"# Options #: {question.get('options', '')}\n"
     )
-    if response_format == "four_tier" and question.get("answer") is not None:
+    if response_format in {"four_tier", "reduced_response"} and question.get("answer") is not None:
         chunks.append(
             "# Reference Answer for Response Rendering #\n"
             f"{question.get('answer')}\n"
             "Use the reference answer only after deciding LearnerCorrect, so that a correct simulated learner can submit a well-formed answer. "
             "Do not use it as a reason to mark every learner correct."
         )
-    if response_format == "answer_only":
+    if response_format == "reduced_response":
         strategy_rule = (
             "3. Infer this learner's likely first-attempt behavior from the provided learner evidence, "
             "memories, non-cognitive state, and visible exercise.\n"
@@ -118,19 +119,35 @@ def build_action_prompt(
         error_rule = (
             "5. Do not intentionally create an error; simulate only a plausible first attempt.\n"
         )
+        checking_rule = (
+            "4. Generate one attempt only. Brief ordinary student checking is allowed when the profile and confidence support it.\n"
+            if include_profile_evidence
+            else "4. Generate one attempt only. Brief ordinary student checking is allowed when the available evidence and confidence support it.\n"
+        )
         chunks.append(
-            "# Answer-only Learner Simulation Protocol #\n"
+            "# Reduced-response Learner Simulation Protocol #\n"
             "1. Simulate this learner's single first attempt without deliberately optimizing for either correctness or incorrectness.\n"
             "2. Base the submitted answer only on the learner evidence, memories, non-cognitive state, and visible exercise.\n"
             f"{strategy_rule}"
-            "4. Generate one attempt only. Brief ordinary student checking is allowed when the profile and confidence support it.\n"
+            f"{checking_rule}"
             f"{error_rule}"
-            "6. Do not judge whether the answer is correct. An external evaluator will score it."
+            "6. Decide LearnerCorrect before rendering StudentAnswer; do not generate confidence or reasoning tiers."
         )
         chunks.append(
-            "Output exactly one line:\n"
+            "Output exactly in this format:\n"
+            "Attempt: <Yes or No>\n"
+            "IdentifiedConcept: <one concept from the provided options>\n"
+            "LearnerCorrect: <Yes or No>\n"
             "StudentAnswer: <the option, value, or short response submitted by the learner>\n"
-            "Do not output reasoning, confidence, correctness, explanation, or markdown formatting."
+            "Do not output confidence, reasoning, explanation, or markdown formatting."
+        )
+        return "\n\n".join(chunks)
+
+    if response_format == "answer_only":
+        chunks.append(
+            "Simulate this learner's single first attempt. Output exactly one line:\n"
+            "StudentAnswer: <the option, value, or short response submitted by the learner>\n"
+            "Do not output explanation or markdown formatting."
         )
         return "\n\n".join(chunks)
 
@@ -144,9 +161,24 @@ def build_action_prompt(
     error_rule = (
         "a separate correction pass. Do not intentionally insert an error; simulate only a plausible first attempt.\n"
     )
+    evidence_tendency_rule = (
+        "9. Do not intentionally make every weak learner wrong or every strong learner correct. The learner profile changes tendencies, "
+        "reasoning depth, available process, and confidence, not a deterministic label. Strong current-item knowledge evidence "
+        "should normally lean correct; weak current-item knowledge evidence should normally lean incorrect. Boundary evidence should be resolved using memory, profile, and item demand.\n"
+        if include_profile_evidence
+        else
+        "9. Do not intentionally make every weak learner wrong or every strong learner correct. Available learner evidence changes tendencies, "
+        "reasoning depth, available process, and confidence, not a deterministic label. Strong current-item knowledge evidence "
+        "should normally lean correct; weak current-item knowledge evidence should normally lean incorrect. Boundary evidence should be resolved using memory and item demand.\n"
+    )
+    task4_evidence = (
+        "current-item knowledge readiness, memory, profile, and item evidence"
+        if include_profile_evidence
+        else "current-item knowledge readiness, memory, and item evidence"
+    )
     chunks.append(
         "# Four-tier Learner Simulation Protocol #\n"
-        "1. Simulate a single first attempt whose success tendency follows the current-item KT/CDM readiness and learner evidence.\n"
+        "1. Simulate a single first attempt whose success tendency follows current-item knowledge readiness and learner evidence.\n"
         "2. Base the attempt only on the learner evidence, memories, non-cognitive state, and the visible exercise. "
         "No sampled response label is provided; if a reference answer is shown, use it only after LearnerCorrect is decided to render a consistent StudentAnswer.\n"
         f"{strategy_rule}"
@@ -163,11 +195,9 @@ def build_action_prompt(
         "8. Confidence is from the learner's perspective, not objective correctness. Use these numeric anchors: high=0.80, medium=0.50, low=0.20. "
         "High confidence can still be wrong under misconception; low confidence can still be correct under guessing. "
         "For careless states, do not recheck even when confidence is medium/high.\n"
-        "9. Do not intentionally make every weak learner wrong or every strong learner correct. The learner profile changes tendencies, "
-        "reasoning depth, available process, and confidence, not a deterministic label. Strong current-item KT/CDM evidence "
-        "should normally lean correct; weak KT/CDM evidence should normally lean incorrect. Boundary evidence should be resolved using memory, profile, and item demand.\n"
-        "10. LearnerCorrect is the Task4 learner-simulation decision: whether this learner would answer the item correctly. "
-        "Make this decision from KT/CDM current-item readiness, memory, profile, and item evidence before rendering StudentAnswer. "
+        f"{evidence_tendency_rule}"
+        "10. LearnerCorrect is the response-simulation decision: whether this learner would answer the item correctly. "
+        f"Make this decision from {task4_evidence} before rendering StudentAnswer. "
         "StudentAnswer is a behavioral record generated after that decision."
     )
     chunks.append(
@@ -215,7 +245,7 @@ def _format_cognitive_profile(cognitive_profile: dict[str, Any]) -> str:
         f"- transfer adaptation: same_parent_transfer={transfer.get('same_parent_transfer_level', 'unknown')} "
         f"({transfer.get('same_parent_transfer_success')})\n"
         "Use this computed cognitive profile to calibrate confidence and reasoning style. "
-        "Current KT/CDM proficiency and related memory are more specific evidence for the current item."
+        "Current knowledge proficiency and related memory are more specific evidence for the current item."
     )
 
 
@@ -262,7 +292,7 @@ def _format_behavior_state(factors: dict[str, float]) -> str:
     return (
         f"- observed working focus proxy: {attention}\n"
         "- role: confidence_and_reasoning_style_calibration_only\n"
-        "- boundary: do not use this proxy to override KT/CDM readiness."
+        "- boundary: do not use this proxy to override current knowledge readiness."
     )
 
 

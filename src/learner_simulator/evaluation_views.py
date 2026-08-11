@@ -26,8 +26,6 @@ DISTRIBUTION_METRICS = [
 TASK_METRICS = [
     "task1_state_inference_count",
     "task2_concept_accuracy",
-    "task2_kt_anchor_acc",
-    "task2_kt_anchor_balanced_accuracy",
     "task3_response_acc",
     "task3_response_balanced_accuracy",
     "task4_mean_abs_mastery_delta",
@@ -245,10 +243,6 @@ def _normalize_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
         ),
         "task1_state_inference_count": metrics.get("task1_state_inference_count"),
         "task2_concept_accuracy": metrics.get("task2_concept_accuracy"),
-        "task2_kt_anchor_acc": metrics.get("task2_kt_anchor_acc"),
-        "task2_kt_anchor_balanced_accuracy": metrics.get(
-            "task2_kt_anchor_balanced_accuracy"
-        ),
         "task3_response_acc": metrics.get("task3_response_acc"),
         "task3_response_balanced_accuracy": metrics.get(
             "task3_response_balanced_accuracy"

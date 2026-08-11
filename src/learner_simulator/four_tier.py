@@ -78,8 +78,42 @@ def parse_four_tier_response(raw: str | None) -> dict[str, Any] | None:
     return parsed
 
 
+def parse_reduced_response(raw: str | None) -> dict[str, Any] | None:
+    """Parse the no-Four-tier contract without changing the response task."""
+
+    if not raw:
+        return None
+    labels = ["Attempt:", "IdentifiedConcept:", "LearnerCorrect:", "StudentAnswer:"]
+    if not all(label.lower() in raw.lower() for label in labels):
+        return None
+    normalized = raw
+    for label in labels:
+        normalized = re.sub(re.escape(label), label, normalized, flags=re.IGNORECASE)
+    values: dict[str, str] = {}
+    keys = ["attempt", "identified_concept", "learner_correct", "student_answer"]
+    for index, (label, key) in enumerate(zip(labels, keys)):
+        part = normalized.split(label, 1)[1]
+        positions = [
+            part.find(next_label)
+            for next_label in labels[index + 1 :]
+            if part.find(next_label) >= 0
+        ]
+        if positions:
+            part = part[: min(positions)]
+        values[key] = part.strip().strip('"')
+    if not values["student_answer"]:
+        return None
+    return {
+        "attempt": _normalize_attempt(values["attempt"]),
+        "identified_concept": values["identified_concept"],
+        "learner_correct": _yes_no(values["learner_correct"]),
+        "student_answer": values["student_answer"],
+        "response_format": "reduced_response",
+    }
+
+
 def parse_answer_only_response(raw: str | None) -> dict[str, Any] | None:
-    """Parse the no-four-tier ablation output contract."""
+    """Legacy parser retained for the standalone historical LLM simulator."""
 
     if not raw:
         return None
@@ -93,10 +127,7 @@ def parse_answer_only_response(raw: str | None) -> dict[str, Any] | None:
     answer = match.group(1).strip().strip('"')
     if not answer:
         return None
-    return {
-        "student_answer": answer,
-        "response_format": "answer_only",
-    }
+    return {"student_answer": answer, "response_format": "answer_only"}
 
 
 def assess_four_tier_response(

@@ -3,28 +3,34 @@
 All baselines use the same unique learners and the fixed 90-history + 10-target protocol.
 
 The main entry point is `run_comparison.py`. Use `multi-role` for the current
-three-stage educational simulator: Learner Profile Encoder, Item-conditioned
-Evidence Encoder, and Four-tier Response Simulator.
+NCDM-grounded process-oriented simulator.
 
 Run a fixed-cohort comparison:
 
 ```powershell
 python experiments/comparison/run_comparison.py `
   --baselines multi-role,agent4edu,random `
-  --cohort-file experiments/cohorts/moocradar_90_10_10x10.json `
-  --dkt-proficiency outputs/dkt/moocradar_full_e50_h100/moocradar_90_10_10x10_proficiency.json `
+  --dataset-root data/moocradar `
+  --cohort-file experiments/cohorts/moocradar_500x10_batches/moocradar_500x10_batch01_50x10_seed20260803.json `
+  --dneuralcdm-checkpoint outputs/dneuralcdm/moocradar_500plan_leakage_safe_v2_posdisc_masked_e30_d32_h64/best_model.pt `
   --feedback-mode teacher-forcing `
-  --progress `
-  --save-steps
+  --progress
 ```
+
+All methods save complete per-step traces and prompts by default. The report also
+stores a secret-redacted run manifest. If the requested output already exists,
+the new run is written to a timestamped sibling file and the earlier result is
+left untouched.
 
 The comparison contains:
 
-- `multi-role`: current three-stage educational learner simulator, with
-  external answer scoring.
+- `multi-role`: current learner-state profile, NCDM/IRT/history evidence,
+  item-conditioned integration, Four-tier response, and state evolution method.
 - `full`: older LLMLearnerSimulator branch, mainly for locked historical
   baselines.
-- `agent4edu`: isolated reproduction of the official Task1-Task4 action prompt and reflection flow. It exposes the reference answer and analysis, uses Task4 as the response prediction, and substitutes this project's dynamic mastery for DNeuralCDM.
+- `agent4edu`: isolated reproduction of the official Task1-Task4 action prompt
+  and reflection flow. It exposes the reference answer and analysis and uses
+  Task4 as the response prediction.
 - `random`: command-line name for the `Probability-sampling Baseline`, which
   samples Bernoulli responses from the project's structured `p_correct` estimate.
   It is not a uniform random 0.5 baseline.

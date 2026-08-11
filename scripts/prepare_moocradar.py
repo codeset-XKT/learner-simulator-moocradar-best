@@ -69,7 +69,6 @@ def main() -> None:
 
     question_name_to_id = load_json_dict(dataset_root / "encode" / "question_id_dict.json")
     skill_name_to_id = load_json_dict(dataset_root / "encode" / "skill_id_dict.json")
-    question_id_to_name = {int(value): str(key) for key, value in question_name_to_id.items()}
     skill_id_to_name = {int(value): str(key) for key, value in skill_name_to_id.items()}
     question_skills = load_question_skills(dataset_root / "graph" / "ques_skill.csv")
     question_dimensions = load_question_dimensions(dataset_root / "graph" / "ques_hierarchy.csv")

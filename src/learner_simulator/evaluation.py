@@ -5,6 +5,23 @@ from typing import Any
 
 
 def evaluate_steps(steps: list[dict[str, Any]], threshold: float = 0.5) -> dict[str, Any]:
+    if not steps:
+        return {
+            "count": 0,
+            "real_correct_rate": None,
+            "sampled_correct_rate": None,
+            "sample_match_acc": None,
+            "sample_f1": None,
+            "sample_confusion": None,
+            "response_balanced_accuracy": None,
+            "response_specificity": None,
+            "response_mcc": None,
+            "learner_distribution_error": None,
+            "concept_distribution_error": None,
+            "mastery_response_monotonicity": None,
+            "mastery_confidence_monotonicity": None,
+            "threshold": threshold,
+        }
     y_true = [int(step["real_response"]) for step in steps]
     y_prob = _optional_probabilities(steps, "p_correct")
     y_pred = [int(prob >= threshold) for prob in y_prob] if y_prob is not None else None
@@ -47,75 +64,51 @@ def evaluate_steps(steps: list[dict[str, Any]], threshold: float = 0.5) -> dict[
             }
         )
 
-    dkt_prob = _optional_probabilities(steps, "dkt_correct_probability")
-    if dkt_prob is not None:
+    dkt_true, dkt_prob = _probability_pairs(steps, "dkt_correct_probability")
+    if dkt_prob:
         dkt_pred = [int(prob >= threshold) for prob in dkt_prob]
         metrics.update(
             {
+                "dkt_probability_count": len(dkt_prob),
+                "dkt_probability_coverage": round(len(dkt_prob) / len(steps), 6),
                 "dkt_predicted_correct_rate": round(_mean(dkt_prob), 6),
-                "dkt_auc": _round_or_none(binary_auc(y_true, dkt_prob)),
-                "dkt_acc_at_threshold": round(accuracy(y_true, dkt_pred), 6),
-                "dkt_f1_at_threshold": round(f1_score(y_true, dkt_pred), 6),
+                "dkt_auc": _round_or_none(binary_auc(dkt_true, dkt_prob)),
+                "dkt_acc_at_threshold": round(accuracy(dkt_true, dkt_pred), 6),
+                "dkt_f1_at_threshold": round(f1_score(dkt_true, dkt_pred), 6),
                 "dkt_balanced_accuracy": _round_or_none(
-                    balanced_accuracy(y_true, dkt_pred)
+                    balanced_accuracy(dkt_true, dkt_pred)
                 ),
-                "dkt_specificity": _round_or_none(specificity(y_true, dkt_pred)),
-                "dkt_mcc": _round_or_none(matthews_corrcoef(y_true, dkt_pred)),
-                "dkt_confusion": confusion_matrix(y_true, dkt_pred),
-                "dkt_mae": round(mae(y_true, dkt_prob), 6),
-                "dkt_rmse": round(rmse(y_true, dkt_prob), 6),
-                "dkt_nll": round(nll(y_true, dkt_prob), 6),
-                "dkt_brier": round(brier_score(y_true, dkt_prob), 6),
+                "dkt_specificity": _round_or_none(specificity(dkt_true, dkt_pred)),
+                "dkt_mcc": _round_or_none(matthews_corrcoef(dkt_true, dkt_pred)),
+                "dkt_confusion": confusion_matrix(dkt_true, dkt_pred),
+                "dkt_mae": round(mae(dkt_true, dkt_prob), 6),
+                "dkt_rmse": round(rmse(dkt_true, dkt_prob), 6),
+                "dkt_nll": round(nll(dkt_true, dkt_prob), 6),
+                "dkt_brier": round(brier_score(dkt_true, dkt_prob), 6),
             }
         )
 
-    ncdm_prob = _optional_probabilities(steps, "ncdm_correct_probability")
-    if ncdm_prob is not None:
+    ncdm_true, ncdm_prob = _probability_pairs(steps, "ncdm_correct_probability")
+    if ncdm_prob:
         ncdm_pred = [int(prob >= threshold) for prob in ncdm_prob]
         metrics.update(
             {
+                "ncdm_probability_count": len(ncdm_prob),
+                "ncdm_probability_coverage": round(len(ncdm_prob) / len(steps), 6),
                 "ncdm_predicted_correct_rate": round(_mean(ncdm_prob), 6),
-                "ncdm_auc": _round_or_none(binary_auc(y_true, ncdm_prob)),
-                "ncdm_acc_at_threshold": round(accuracy(y_true, ncdm_pred), 6),
-                "ncdm_f1_at_threshold": round(f1_score(y_true, ncdm_pred), 6),
+                "ncdm_auc": _round_or_none(binary_auc(ncdm_true, ncdm_prob)),
+                "ncdm_acc_at_threshold": round(accuracy(ncdm_true, ncdm_pred), 6),
+                "ncdm_f1_at_threshold": round(f1_score(ncdm_true, ncdm_pred), 6),
                 "ncdm_balanced_accuracy": _round_or_none(
-                    balanced_accuracy(y_true, ncdm_pred)
+                    balanced_accuracy(ncdm_true, ncdm_pred)
                 ),
-                "ncdm_specificity": _round_or_none(specificity(y_true, ncdm_pred)),
-                "ncdm_mcc": _round_or_none(matthews_corrcoef(y_true, ncdm_pred)),
-                "ncdm_confusion": confusion_matrix(y_true, ncdm_pred),
-                "ncdm_mae": round(mae(y_true, ncdm_prob), 6),
-                "ncdm_rmse": round(rmse(y_true, ncdm_prob), 6),
-                "ncdm_nll": round(nll(y_true, ncdm_prob), 6),
-                "ncdm_brier": round(brier_score(y_true, ncdm_prob), 6),
-            }
-        )
-
-    kt_state_prob = _optional_probabilities(steps, "kt_state_probability")
-    if kt_state_prob is not None:
-        kt_state_pred = [int(prob >= threshold) for prob in kt_state_prob]
-        metrics.update(
-            {
-                "kt_state_predicted_correct_rate": round(_mean(kt_state_prob), 6),
-                "kt_state_auc": _round_or_none(binary_auc(y_true, kt_state_prob)),
-                "kt_state_acc_at_threshold": round(
-                    accuracy(y_true, kt_state_pred),
-                    6,
-                ),
-                "kt_state_f1_at_threshold": round(
-                    f1_score(y_true, kt_state_pred),
-                    6,
-                ),
-                "kt_state_balanced_accuracy": _round_or_none(
-                    balanced_accuracy(y_true, kt_state_pred)
-                ),
-                "kt_state_specificity": _round_or_none(
-                    specificity(y_true, kt_state_pred)
-                ),
-                "kt_state_mcc": _round_or_none(
-                    matthews_corrcoef(y_true, kt_state_pred)
-                ),
-                "kt_state_confusion": confusion_matrix(y_true, kt_state_pred),
+                "ncdm_specificity": _round_or_none(specificity(ncdm_true, ncdm_pred)),
+                "ncdm_mcc": _round_or_none(matthews_corrcoef(ncdm_true, ncdm_pred)),
+                "ncdm_confusion": confusion_matrix(ncdm_true, ncdm_pred),
+                "ncdm_mae": round(mae(ncdm_true, ncdm_prob), 6),
+                "ncdm_rmse": round(rmse(ncdm_true, ncdm_prob), 6),
+                "ncdm_nll": round(nll(ncdm_true, ncdm_prob), 6),
+                "ncdm_brier": round(brier_score(ncdm_true, ncdm_prob), 6),
             }
         )
 
@@ -222,6 +215,28 @@ def _optional_probabilities(
         except (TypeError, ValueError):
             return None
     return values
+
+
+def _probability_pairs(
+    steps: list[dict[str, Any]],
+    key: str,
+) -> tuple[list[int], list[float]]:
+    labels: list[int] = []
+    probabilities: list[float] = []
+    for step in steps:
+        value = step.get(key)
+        if value is None:
+            continue
+        try:
+            probability = float(value)
+            label = int(step["real_response"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not math.isfinite(probability):
+            continue
+        labels.append(label)
+        probabilities.append(min(1.0, max(0.0, probability)))
+    return labels, probabilities
 
 
 def binary_auc(y_true: list[int], y_score: list[float]) -> float | None:
@@ -418,8 +433,8 @@ def extract_four_tier_diagnostics(
     diagnostics: list[dict[str, Any]] = []
     for step in steps:
         assessment = step.get("four_tier_assessment")
+        parsed = step.get("llm_parsed_action")
         if not isinstance(assessment, dict):
-            parsed = step.get("llm_parsed_action")
             if isinstance(parsed, dict):
                 assessment = parsed.get("four_tier_assessment")
         if not isinstance(assessment, dict):
@@ -434,6 +449,13 @@ def extract_four_tier_diagnostics(
                 ),
                 "answer_correct": assessment.get("answer_correct"),
                 "reasoning_correct": assessment.get("reasoning_correct"),
+                "learner_correct": (
+                    parsed.get("learner_correct")
+                    if isinstance(parsed, dict)
+                    else step.get("task4_learner_correct")
+                ),
+                "real_response": int(step["real_response"]),
+                "ncdm_probability": step.get("ncdm_correct_probability"),
                 "fully_scored": bool(assessment.get("fully_scored", False)),
                 "diagnosis": str(assessment.get("diagnosis", "unknown")),
             }
@@ -474,16 +496,15 @@ def extract_simulation_task_diagnostics(
         tasks = step.get("simulation_tasks")
         if not isinstance(tasks, dict):
             continue
-        task2 = tasks.get("task2_item_conditioned_activation")
-        task3 = tasks.get("task3_four_tier_response_generation")
-        task4 = tasks.get("task4_state_evolution") or step.get("state_evolution")
-        anchor = task2.get("kt_decision_anchor") if isinstance(task2, dict) else None
+        task1 = tasks.get("task1_learner_state_profile")
+        task2 = tasks.get("task2_item_conditioned_integration")
+        task3 = tasks.get("task3_learner_response_generation")
+        task4 = tasks.get("task4_dynamic_state_evolution") or step.get("state_evolution")
         diagnostics.append(
             {
                 "real_response": int(step["real_response"]),
-                "task1_available": isinstance(
-                    tasks.get("task1_learner_state_inference"),
-                    dict,
+                "task1_available": (
+                    isinstance(task1, dict) and not bool(task1.get("ablated"))
                 ),
                 "selected_concept": (
                     task2.get("selected_concept") if isinstance(task2, dict) else None
@@ -493,15 +514,6 @@ def extract_simulation_task_diagnostics(
                 ),
                 "concept_match": (
                     task2.get("concept_match") if isinstance(task2, dict) else None
-                ),
-                "kt_anchor_probability": (
-                    anchor.get("probability") if isinstance(anchor, dict) else None
-                ),
-                "kt_anchor_predicted_response": (
-                    anchor.get("predicted_response") if isinstance(anchor, dict) else None
-                ),
-                "kt_anchor_confidence_band": (
-                    anchor.get("confidence_band") if isinstance(anchor, dict) else None
                 ),
                 "task3_answer_correct": (
                     task3.get("answer_correct") if isinstance(task3, dict) else None
@@ -541,46 +553,6 @@ def simulation_task_metrics(
             _mean([int(bool(item["concept_match"])) for item in concept_items]),
             6,
         )
-
-    anchor_items = [
-        item for item in items
-        if item["kt_anchor_predicted_response"] is not None
-    ]
-    if anchor_items:
-        y_true = [int(item["real_response"]) for item in anchor_items]
-        y_pred = [int(item["kt_anchor_predicted_response"]) for item in anchor_items]
-        y_prob = [
-            float(item["kt_anchor_probability"])
-            for item in anchor_items
-            if item["kt_anchor_probability"] is not None
-        ]
-        metrics.update(
-            {
-                "task2_kt_anchor_count": len(anchor_items),
-                "task2_kt_anchor_acc": round(accuracy(y_true, y_pred), 6),
-                "task2_kt_anchor_f1": round(f1_score(y_true, y_pred), 6),
-                "task2_kt_anchor_balanced_accuracy": _round_or_none(
-                    balanced_accuracy(y_true, y_pred)
-                ),
-                "task2_kt_anchor_specificity": _round_or_none(
-                    specificity(y_true, y_pred)
-                ),
-                "task2_kt_anchor_mcc": _round_or_none(
-                    matthews_corrcoef(y_true, y_pred)
-                ),
-                "task2_kt_anchor_confusion": confusion_matrix(y_true, y_pred),
-                "task2_kt_anchor_confidence_band_counts": _counts(
-                    [
-                        str(item["kt_anchor_confidence_band"])
-                        for item in anchor_items
-                    ]
-                ),
-            }
-        )
-        if len(y_prob) == len(anchor_items):
-            metrics["task2_kt_anchor_auc"] = _round_or_none(
-                binary_auc(y_true, y_prob)
-            )
 
     response_items = [
         item for item in items
@@ -677,6 +649,27 @@ def four_tier_consistency_metrics(items: list[dict[str, Any]]) -> dict[str, Any]
             ),
             6,
         )
+        decision_answer_items = [
+            item for item in answer_scored
+            if item.get("learner_correct") is not None
+        ]
+        result["four_tier_decision_answer_consistency_count"] = len(
+            decision_answer_items
+        )
+        result["four_tier_decision_answer_consistency"] = _round_or_none(
+            _mean(
+                [
+                    int(
+                        int(item["learner_correct"])
+                        == int(bool(item["answer_correct"]))
+                    )
+                    for item in decision_answer_items
+                ]
+            )
+            if decision_answer_items
+            else None
+        )
+        result.update(conditional_confidence_gap(answer_scored))
     if reasoning_scored:
         result["four_tier_answer_reasoning_correctness_consistency"] = round(
             _mean(
@@ -690,6 +683,73 @@ def four_tier_consistency_metrics(items: list[dict[str, Any]]) -> dict[str, Any]
     else:
         result["four_tier_answer_reasoning_correctness_consistency"] = None
     return result
+
+
+def conditional_confidence_gap(items: list[dict[str, Any]]) -> dict[str, Any]:
+    """Test whether confidence adds reliability within comparable NCDM states.
+
+    Items are grouped by low/mid/high NCDM readiness and the LLM's predicted
+    response. Within each comparable group, high-confidence decisions should
+    agree with the real learner response more often than lower-confidence ones.
+    """
+
+    grouped: dict[tuple[str, int], dict[str, list[int]]] = {}
+    for item in items:
+        probability = item.get("ncdm_probability")
+        learner_correct = item.get("learner_correct")
+        if probability is None or learner_correct is None:
+            continue
+        probability = float(probability)
+        if probability < 0.4:
+            band = "low"
+        elif probability < 0.7:
+            band = "medium"
+        else:
+            band = "high"
+        confidence_group = (
+            "high" if float(item["answer_confidence"]) >= 0.75 else "lower"
+        )
+        agreement = int(int(learner_correct) == int(item["real_response"]))
+        grouped.setdefault((band, int(learner_correct)), {"high": [], "lower": []})[
+            confidence_group
+        ].append(agreement)
+
+    comparable = []
+    details: dict[str, Any] = {}
+    for (band, prediction), groups in sorted(grouped.items()):
+        key = f"{band}_pred_{prediction}"
+        high_rate = _mean(groups["high"]) if groups["high"] else None
+        lower_rate = _mean(groups["lower"]) if groups["lower"] else None
+        details[key] = {
+            "high_confidence_count": len(groups["high"]),
+            "lower_confidence_count": len(groups["lower"]),
+            "high_confidence_reliability": _round_or_none(high_rate),
+            "lower_confidence_reliability": _round_or_none(lower_rate),
+            "gap": _round_or_none(
+                high_rate - lower_rate
+                if high_rate is not None and lower_rate is not None
+                else None
+            ),
+        }
+        if high_rate is not None and lower_rate is not None:
+            comparable.append(
+                {
+                    "gap": high_rate - lower_rate,
+                    "weight": min(len(groups["high"]), len(groups["lower"])),
+                }
+            )
+
+    total_weight = sum(item["weight"] for item in comparable)
+    weighted_gap = (
+        sum(item["gap"] * item["weight"] for item in comparable) / total_weight
+        if total_weight
+        else None
+    )
+    return {
+        "four_tier_conditional_confidence_gap": _round_or_none(weighted_gap),
+        "four_tier_conditional_confidence_comparable_groups": len(comparable),
+        "four_tier_conditional_confidence_details": details,
+    }
 
 
 def calibration_ece(
@@ -755,7 +815,16 @@ def _mastery_bins(steps: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]
 
 
 def _step_mastery(step: dict[str, Any]) -> float | None:
-    components = step.get("probability_components")
+    for key in ["ncdm_concept_mastery", "history_state_probability"]:
+        value = step.get(key)
+        if value is not None:
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                pass
+    components = step.get("history_state_components") or step.get(
+        "probability_components"
+    )
     if not isinstance(components, dict):
         return None
     try:

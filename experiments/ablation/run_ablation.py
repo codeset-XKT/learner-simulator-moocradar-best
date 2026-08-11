@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -10,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from experiments.common import (
+from experiments.common import (  # noqa: E402
     add_shared_arguments,
     load_fixed_cohort,
     metric_view,
@@ -21,23 +22,30 @@ from experiments.common import (
 
 ABLATIONS = {
     "full": {},
-    "no-profile": {"profile": False},
-    "no-memory": {"memory": False},
-    "no-proficiency": {"proficiency": False},
-    "no-four-tier": {"four_tier": False},
-    "no-cognitive-selection": {"cognitive_strategy": False},
-    "no-cognitive-profile": {"cognitive_profile": False},
-    "no-ability-profile": {"ability_profile": False},
-    "no-irt-evidence": {"irt_evidence": False},
-    "no-learning-tool-state": {"learning_tool_state": False},
-    "no-item-conditioned-ability": {"item_conditioned_ability": False},
-    "no-historical-reflection": {"historical_reflection": False},
-    "with-dkt-predictor": {"dkt_predictor": True},
-    "best-full": {"item_conditioned_ability": False},
-    "best-no-ability-profile": {
+    "no-learner-state-profile": {
+        "profile": False,
+        "cognitive_profile": False,
         "ability_profile": False,
-        "item_conditioned_ability": False,
     },
+    "no-item-conditioned-integration": {"item_conditioned_ability": False},
+    "no-dynamic-state-evolution": {"dynamic_state_evolution": False},
+    "no-ncdm": {"ncdm_evidence": False},
+    "no-irt": {"irt_evidence": False},
+    "no-ncdm-irt": {
+        "ncdm_evidence": False,
+        "irt_evidence": False,
+    },
+    "no-four-tier": {"four_tier": False},
+}
+
+PAPER_ABLATIONS = {
+    "no-learner-state-profile",
+    "no-item-conditioned-integration",
+    "no-dynamic-state-evolution",
+    "no-ncdm",
+    "no-irt",
+    "no-ncdm-irt",
+    "no-four-tier",
 }
 
 
@@ -46,7 +54,10 @@ def parse_args() -> argparse.Namespace:
     add_shared_arguments(parser)
     parser.add_argument(
         "--variants",
-        default="full,no-profile,no-memory,no-proficiency,no-four-tier",
+        default=(
+            "full,no-learner-state-profile,no-item-conditioned-integration,"
+            "no-four-tier,no-dynamic-state-evolution"
+        ),
         help="Comma-separated ablation variants.",
     )
     parser.add_argument(
@@ -56,12 +67,22 @@ def parse_args() -> argparse.Namespace:
         help="Number of ablation variants to run concurrently.",
     )
     parser.add_argument(
+        "--variant-start-stagger-seconds",
+        type=float,
+        default=0.0,
+        help=(
+            "Delay each parallel variant's first request by this many seconds "
+            "times its variant index. This avoids simultaneous streaming-request "
+            "handshakes without changing experiment semantics."
+        ),
+    )
+    parser.add_argument(
         "--simulator",
         choices=["full", "multi-role"],
-        default="full",
+        default="multi-role",
         help=(
-            "Simulator used for ablations. Use multi-role for "
-            "no-item-conditioned-ability."
+            "Simulator used for ablations. The paper-facing suite targets "
+            "the current multi-role method."
         ),
     )
     parser.add_argument(
@@ -78,19 +99,31 @@ def main() -> None:
     unknown = set(selected) - set(ABLATIONS)
     if unknown:
         raise ValueError(f"Unknown ablations: {sorted(unknown)}")
+    incompatible = set(selected) & PAPER_ABLATIONS
+    if args.simulator != "multi-role" and incompatible:
+        raise ValueError(
+            "Paper-facing ablations require --simulator multi-role: "
+            f"{sorted(incompatible)}"
+        )
 
     questions, history_rows, target_rows = load_fixed_cohort(args)
+    variant_index = {variant: index for index, variant in enumerate(selected)}
+
     def run_variant(variant: str):
+        stagger = max(0.0, float(args.variant_start_stagger_seconds))
+        if stagger:
+            time.sleep(stagger * variant_index[variant])
         modules = {
             "profile": True,
             "memory": True,
-            "proficiency": True,
-            "behavior": True,
+            "cognitive_profile": True,
+            "ability_profile": True,
+            "item_conditioned_ability": True,
             "four_tier": True,
             "historical_reflection": True,
             "irt_evidence": True,
-            "learning_tool_state": True,
-            "dkt_predictor": False,
+            "ncdm_evidence": True,
+            "dynamic_state_evolution": True,
             **ABLATIONS[variant],
         }
         report = run_experiment(

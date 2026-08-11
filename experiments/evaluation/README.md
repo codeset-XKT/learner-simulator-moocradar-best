@@ -13,8 +13,8 @@ The project reports four layers:
 - Distribution consistency: Learner Distribution Error (LDE) and Concept
   Distribution Error (CDE).
 - Task consistency: learner-state/task availability, concept selection,
-  KT-anchor consistency, response-generation consistency, and state-evolution
-  diagnostics when the simulator exposes them.
+  response-generation consistency, and state-evolution diagnostics when the
+  simulator exposes them.
 - Diagnostic consistency: mastery-bucket monotonicity, confidence monotonicity,
   and Four-tier confidence calibration.
 
@@ -50,13 +50,16 @@ Agent4Edu's tasks are external educational-agent tasks:
 - problem-solving process and final answer generation
 - correctness prediction
 
-This project's current simulator uses a process-oriented diagnostic
-decomposition:
+This project's current simulator uses a process-oriented decomposition:
 
 - learner-state/profile inference
 - item-conditioned knowledge and ability activation
 - Four-tier response generation
 - state-evolution diagnostics
+
+Direct NCDM or DKT predictive metrics are computed on every step for which the
+model exposes a valid probability. Always report `*_probability_count` and
+`*_probability_coverage` beside those metrics when coverage is below 100%.
 
 The two designs should be compared at the metric level, not treated as identical
 task definitions.

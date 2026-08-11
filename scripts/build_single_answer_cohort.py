@@ -17,9 +17,6 @@ from learner_simulator.data import (  # noqa: E402
     sequence_row_from_steps,
     take_sequence_rows,
 )
-from learner_simulator.llm import load_json  # noqa: E402
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(

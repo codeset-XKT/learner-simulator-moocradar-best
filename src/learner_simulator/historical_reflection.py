@@ -9,6 +9,7 @@ from learner_simulator.data import clean_sequence
 def build_historical_reflective_calibration(
     history_row: dict[str, str] | None,
     replay_records: list[dict[str, Any]],
+    include_profile_evidence: bool = True,
 ) -> dict[str, Any]:
     """Summarize replay errors inside observed history only.
 
@@ -27,6 +28,7 @@ def build_historical_reflective_calibration(
             rate_gap=None,
             false_positive_rate=None,
             false_negative_rate=None,
+            include_profile_evidence=include_profile_evidence,
         )
         return {
             "module": "historical_reflective_calibration",
@@ -38,8 +40,9 @@ def build_historical_reflective_calibration(
             "error_pattern": "unavailable",
             "evidence_confidence": "low",
             "guidance": (
-                "No historical replay calibration is available; use the stable "
-                "profile, memory, and current proficiency evidence."
+                "No historical replay calibration is available; use stable learner, memory, and current proficiency evidence."
+                if include_profile_evidence
+                else "No historical replay calibration is available; use memory and current proficiency evidence."
             ),
             "adaptive_policy": adaptive_policy,
         }
@@ -87,6 +90,7 @@ def build_historical_reflective_calibration(
         rate_gap=rate_gap,
         false_positive_rate=fp_rate,
         false_negative_rate=fn_rate,
+        include_profile_evidence=include_profile_evidence,
     )
     return {
         "module": "historical_reflective_calibration",
@@ -123,6 +127,7 @@ def _adaptive_policy(
     rate_gap: float | None,
     false_positive_rate: float | None,
     false_negative_rate: float | None,
+    include_profile_evidence: bool = True,
 ) -> dict[str, Any]:
     """Convert replay diagnostics into a target-stage simulation policy.
 
@@ -132,15 +137,19 @@ def _adaptive_policy(
 
     gap = float(rate_gap or 0.0)
     strength = _strength(abs(gap), evidence_confidence)
-    trust = _ncdm_trust(replay_acc, evidence_confidence)
+    trust = _state_model_trust(
+        replay_acc,
+        evidence_confidence,
+        include_profile_evidence=include_profile_evidence,
+    )
     if bias_direction == "underestimates_success":
         response_bias = "preserve_plausible_success"
         success_adjustment = strength
         failure_adjustment = "conservative"
-        confidence_adjustment = "raise_when_ncdm_and_memory_support"
+        confidence_adjustment = "raise_when_state_and_memory_support"
         instruction = (
             "During target simulation, do not make the learner unnecessarily "
-            "pessimistic. When NCDM proficiency, recent memory, and item demand "
+            "pessimistic. When current knowledge state, recent memory, and item demand "
             "support success, preserve a learner-level correct attempt."
         )
     elif bias_direction == "overestimates_success":
@@ -157,11 +166,11 @@ def _adaptive_policy(
         response_bias = "balanced"
         success_adjustment = "neutral"
         failure_adjustment = "neutral"
-        confidence_adjustment = "follow_ncdm_memory_and_item_evidence"
+        confidence_adjustment = "follow_state_memory_and_item_evidence"
         instruction = (
-            "Historical replay is approximately calibrated. Use NCDM, memory, "
-            "item demand, and learner profile without adding systematic optimism "
-            "or pessimism."
+            "Historical replay is approximately calibrated. Use current knowledge state, memory, item demand, and learner evidence without adding systematic optimism or pessimism."
+            if include_profile_evidence
+            else "Historical replay is approximately calibrated. Use current knowledge state, memory, and item demand without adding systematic optimism or pessimism."
         )
 
     if error_pattern == "missed_successes":
@@ -183,7 +192,7 @@ def _adaptive_policy(
         "module": "historical_replay_policy_adaptation",
         "source": "observed_history_replay_only",
         "target_label_access": False,
-        "ncdm_trust": trust,
+        "state_model_trust": trust,
         "response_bias": response_bias,
         "success_plausibility_adjustment": success_adjustment,
         "failure_sensitivity_adjustment": failure_adjustment,
@@ -210,14 +219,22 @@ def _strength(gap_abs: float, evidence_confidence: str) -> str:
     return "weak"
 
 
-def _ncdm_trust(replay_acc: float | None, evidence_confidence: str) -> str:
+def _state_model_trust(
+    replay_acc: float | None,
+    evidence_confidence: str,
+    include_profile_evidence: bool = True,
+) -> str:
     if replay_acc is None or evidence_confidence == "low":
         return "use_as_primary_but_uncertain"
     if replay_acc >= 0.75:
         return "high"
     if replay_acc >= 0.55:
         return "moderate"
-    return "low_requires_profile_and_memory_correction"
+    return (
+        "low_requires_learner_evidence_and_memory_correction"
+        if include_profile_evidence
+        else "low_requires_memory_and_item_evidence_correction"
+    )
 
 
 def _concept_adjustments(records: list[dict[str, Any]]) -> list[dict[str, Any]]:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -48,6 +50,10 @@ class DNeuralCDMProficiency:
 
     def available(self) -> bool:
         return bool(self.students)
+
+    def checkpoint_sha256(self) -> str | None:
+        value = (self.data.get("_meta") or {}).get("checkpoint_sha256")
+        return str(value) if value else None
 
     def _sequence(self, uid: str) -> list[list[float]] | None:
         value = self.students.get(str(uid))
@@ -121,8 +127,10 @@ if nn is not None:
             num_know: int,
             embedding_dim: int,
             hidden_dim: int,
+            positive_discrimination: bool = True,
         ) -> None:
             super().__init__()
+            self.positive_discrimination = positive_discrimination
             self.embedding = nn.Linear(2 * num_know, embedding_dim)
             self.exer_diff = nn.Linear(num_exercises, num_know)
             self.exer_disc = nn.Linear(num_exercises, 1)
@@ -152,7 +160,12 @@ if nn is not None:
                 exercise_id.shape[1],
                 -1,
             )
-            exer_disc = self.exer_disc(exercise_flat).reshape(exercise_id.shape[0], exercise_id.shape[1], -1)
+            exer_disc = self.exer_disc(exercise_flat)
+            if self.positive_discrimination:
+                # A positive discrimination parameter preserves the cognitive
+                # diagnosis ordering: higher mastery must not reduce success.
+                exer_disc = torch.sigmoid(exer_disc)
+            exer_disc = exer_disc.reshape(exercise_id.shape[0], exercise_id.shape[1], -1)
             stu_emb = torch.sigmoid(self.fc(lstm_out))
             input_x = (stu_emb - exer_diff) * mask * exer_disc
             input_x = torch.tanh(self.pre1(input_x)).squeeze(-1)
@@ -177,6 +190,8 @@ class DNeuralCDMResponsePredictor:
         self.checkpoint: dict[str, Any] = {}
         self.exercise_id_map: dict[str, int] = {}
         self.concept_id_map: dict[str, int] = {}
+        self.checkpoint_sha256: str | None = None
+        self.training_metadata: dict[str, Any] = {}
         if self.path is not None:
             self._load(self.path)
 
@@ -185,7 +200,9 @@ class DNeuralCDMResponsePredictor:
         if not checkpoint_path.exists():
             return
         checkpoint = torch.load(checkpoint_path, map_location="cpu")
+        self.checkpoint_sha256 = _file_sha256(checkpoint_path)
         self.checkpoint = checkpoint
+        self.training_metadata = dict(checkpoint.get("training_metadata") or {})
         self.exercise_id_map = {
             str(key): int(value)
             for key, value in checkpoint["exercise_id_map"].items()
@@ -194,18 +211,22 @@ class DNeuralCDMResponsePredictor:
             str(key): int(value)
             for key, value in checkpoint["concept_id_map"].items()
         }
-        model = DNeuralCDM(
-            checkpoint["num_exercises"],
-            checkpoint["num_know"],
-            int(checkpoint.get("embedding_dim", 128)),
-            int(checkpoint.get("hidden_dim", 128)),
-        )
+        model = dneuralcdm_model_from_checkpoint(checkpoint)
         model.load_state_dict(checkpoint["model_state_dict"])
         model.eval()
         self.model = model
 
     def available(self) -> bool:
         return self.model is not None and bool(self.checkpoint)
+
+    def is_user_held_out(self, uid: str) -> bool:
+        if self.training_metadata.get("cohort_history_used_for_training") is not False:
+            return False
+        excluded = {
+            str(value)
+            for value in self.training_metadata.get("excluded_user_ids", [])
+        }
+        return str(uid) in excluded
 
     def probability(
         self,
@@ -250,6 +271,51 @@ class DNeuralCDMResponsePredictor:
         with torch.no_grad():
             probabilities, _, _ = self.model(inputs, exercises, masks)
         return float(probabilities.reshape(-1)[-1].item())
+
+    def knowledge_state(
+        self,
+        prefix_steps: list[dict[str, Any]],
+    ) -> dict[int, float] | None:
+        """Return the NCDM latent concept state after the complete prefix."""
+
+        if not self.available() or not prefix_steps:
+            return None
+        encoded: list[tuple[int, int, int]] = []
+        for step in prefix_steps:
+            exercise_index = self.exercise_id_map.get(str(step["qid"]))
+            concept_index = self.concept_id_map.get(str(step["cid"]))
+            if exercise_index is None or concept_index is None:
+                continue
+            encoded.append((exercise_index, concept_index, int(step["response"])))
+        if not encoded:
+            return None
+
+        checkpoint = self.checkpoint
+        length = len(encoded)
+        inputs = torch.zeros(
+            (1, length, checkpoint["num_know"] * 2),
+            dtype=torch.float32,
+        )
+        exercises = torch.zeros(
+            (1, length, checkpoint["num_exercises"]),
+            dtype=torch.float32,
+        )
+        masks = torch.zeros(
+            (1, length, checkpoint["num_know"]),
+            dtype=torch.float32,
+        )
+        for index, (exercise_index, concept_index, response) in enumerate(encoded):
+            inputs[0, index, (2 * concept_index) + (0 if response == 1 else 1)] = 1.0
+            exercises[0, index, exercise_index] = 1.0
+            masks[0, index, concept_index] = 1.0
+
+        with torch.no_grad():
+            _, _, states = self.model(inputs, exercises, masks)
+        latest = states[0, -1].tolist()
+        return {
+            int(cid): min(1.0, max(0.0, float(latest[index])))
+            for cid, index in self.concept_id_map.items()
+        }
 
 
 class DNeuralCDMSequenceDataset:
@@ -318,6 +384,7 @@ def train_dneuralcdm(
     hidden_dim: int = 128,
     seed: int = 42,
     log_every: int = 20,
+    training_metadata: dict[str, Any] | None = None,
 ) -> Path:
     require_torch()
     torch.manual_seed(seed)
@@ -332,7 +399,8 @@ def train_dneuralcdm(
     criterion = nn.BCELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     best_state = None
-    best_val = -1.0
+    best_val_loss = float("inf")
+    best_val_acc = 0.0
     for epoch in range(1, epochs + 1):
         model.train()
         train_loss = 0.0
@@ -356,30 +424,30 @@ def train_dneuralcdm(
         model.eval()
         correct = 0
         total = 0
-        val_loss = 0.0
-        val_batches = 0
+        val_loss_sum = 0.0
         with torch.no_grad():
             for batch in val_loader:
                 loss, outputs, target = _step_loss(model, batch, criterion, device)
-                val_loss += float(loss.item())
-                val_batches += 1
+                val_loss_sum += float(loss.item()) * target.numel()
                 pred = (outputs >= 0.5).float()
                 correct += (pred == target).sum().item()
                 total += target.numel()
         val_acc = correct / max(total, 1)
+        val_loss = val_loss_sum / max(total, 1)
         print(
             "DNeuralCDM "
             f"epoch={epoch}/{epochs} "
             f"train_loss={train_loss / max(train_batches, 1):.4f} "
-            f"val_loss={val_loss / max(val_batches, 1):.4f} "
+            f"val_loss={val_loss:.4f} "
             f"val_acc={val_acc:.4f} "
             f"train_batches={train_batches} "
-            f"val_batches={val_batches}",
+            f"val_batches={len(val_loader)}",
             flush=True,
         )
-        if val_acc >= best_val:
-            best_val = val_acc
-            best_state = model.state_dict()
+        if val_loss <= best_val_loss:
+            best_val_loss = val_loss
+            best_val_acc = val_acc
+            best_state = copy.deepcopy(model.state_dict())
     checkpoint_path = output / "best_model.pt"
     torch.save(
         {
@@ -388,9 +456,14 @@ def train_dneuralcdm(
             "num_know": dataset.num_know,
             "embedding_dim": embedding_dim,
             "hidden_dim": hidden_dim,
+            "architecture_version": 2,
+            "positive_discrimination": True,
             "exercise_id_map": dataset.exercise_id_map,
             "concept_id_map": dataset.concept_id_map,
-            "best_val_acc": best_val,
+            "best_val_acc": best_val_acc,
+            "best_val_loss": best_val_loss,
+            "selection_metric": "valid_position_bce",
+            "training_metadata": dict(training_metadata or {}),
         },
         checkpoint_path,
     )
@@ -411,18 +484,16 @@ def export_dneuralcdm_proficiency(
     )
     _, _, all_data = dataset.split_by_student()
     loader = make_dneuralcdm_loader(all_data, batch_size=1, shuffle=False)
-    model = DNeuralCDM(
-        checkpoint["num_exercises"],
-        checkpoint["num_know"],
-        checkpoint["embedding_dim"],
-        checkpoint["hidden_dim"],
-    )
+    model = dneuralcdm_model_from_checkpoint(checkpoint)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
     students: dict[str, Any] = {}
     with torch.no_grad():
         for sequences, masks, exercise_ids, labels, user_ids, lengths in loader:
-            _, _, stu_emb = model(sequences[:, :-1, :], exercise_ids[:, 1:, :], masks[:, 1:, :])
+            # Export the latent state after every observed response. The response
+            # head is irrelevant here; using the complete input sequence avoids
+            # dropping the final history interaction from the learner state.
+            _, _, stu_emb = model(sequences, exercise_ids, masks)
             uid = str(user_ids[0][0])
             students[uid] = stu_emb.cpu().tolist()[0]
     output = Path(output_path)
@@ -432,6 +503,8 @@ def export_dneuralcdm_proficiency(
             "format": "learner_simulator_dneuralcdm_proficiency_v1",
             "concept_id_map": checkpoint["concept_id_map"],
             "exercise_id_map": checkpoint["exercise_id_map"],
+            "checkpoint_sha256": _file_sha256(Path(checkpoint_path)),
+            "state_alignment": "one_latent_state_after_each_observed_response",
         },
         "students": students,
     }
@@ -445,6 +518,30 @@ def _build_id_map(rows: list[dict[str, str]], key: str) -> dict[str, int]:
         for step in clean_sequence(row):
             values.add(str(step[key]))
     return {value: index for index, value in enumerate(sorted(values, key=lambda x: int(x)))}
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def dneuralcdm_model_from_checkpoint(checkpoint):
+    """Build the matching model while preserving legacy checkpoint behavior."""
+
+    architecture_version = int(checkpoint.get("architecture_version", 1))
+    positive_discrimination = bool(
+        checkpoint.get("positive_discrimination", architecture_version >= 2)
+    )
+    return DNeuralCDM(
+        checkpoint["num_exercises"],
+        checkpoint["num_know"],
+        int(checkpoint.get("embedding_dim", 128)),
+        int(checkpoint.get("hidden_dim", 128)),
+        positive_discrimination=positive_discrimination,
+    )
 
 
 def _collate_fn(batch):
@@ -473,6 +570,11 @@ def _step_loss(model, batch, criterion, device):
     masks = masks.to(device)
     exercise_ids = exercise_ids.to(device)
     labels = labels.to(device)
+    lengths = lengths.to(device)
     outputs, _, _ = model(sequences[:, :-1, :], exercise_ids[:, 1:, :], masks[:, 1:, :])
     target = labels[:, 1:]
-    return criterion(outputs, target), outputs, target
+    positions = torch.arange(outputs.shape[1], device=device).unsqueeze(0)
+    valid = positions < (lengths - 1).unsqueeze(1)
+    valid_outputs = outputs[valid]
+    valid_target = target[valid]
+    return criterion(valid_outputs, valid_target), valid_outputs, valid_target

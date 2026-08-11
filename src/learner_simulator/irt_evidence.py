@@ -38,7 +38,7 @@ def build_irt_ability_item_evidence(
         "prompt_instruction": (
             "Use IRT as learner-level ability-difficulty evidence. It may change "
             "confidence, effort, and whether success is plausible on this item, "
-            "but it must not replace NCDM/KT concept proficiency and must not be "
+            "but it must not replace current concept proficiency and must not be "
             "copied as a correctness label."
         ),
     }

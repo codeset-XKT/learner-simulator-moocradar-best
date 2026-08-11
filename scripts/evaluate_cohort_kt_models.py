@@ -12,7 +12,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from learner_simulator.data import clean_sequence  # noqa: E402
 from learner_simulator.dkt import DKT, require_torch as require_dkt_torch, torch as dkt_torch  # noqa: E402
 from learner_simulator.dneuralcdm import (  # noqa: E402
-    DNeuralCDM,
+    dneuralcdm_model_from_checkpoint,
     require_torch as require_ncdm_torch,
     torch as ncdm_torch,
 )
@@ -137,12 +137,7 @@ def _eval_ncdm(
     checkpoint = ncdm_torch.load(checkpoint_path, map_location="cpu")
     exercise_id_map = {str(key): int(value) for key, value in checkpoint["exercise_id_map"].items()}
     concept_id_map = {str(key): int(value) for key, value in checkpoint["concept_id_map"].items()}
-    model = DNeuralCDM(
-        checkpoint["num_exercises"],
-        checkpoint["num_know"],
-        int(checkpoint.get("embedding_dim", 128)),
-        int(checkpoint.get("hidden_dim", 128)),
-    )
+    model = dneuralcdm_model_from_checkpoint(checkpoint)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
 
@@ -249,15 +244,15 @@ def _load_ncdm_anchor_metrics(path: Path) -> dict:
     payload = json.loads(path.read_text(encoding="utf-8-sig"))
     metrics = payload["reports"]["full"]["metrics"]
     return {
-        "count": metrics.get("task2_kt_anchor_count"),
-        "acc": metrics.get("task2_kt_anchor_acc"),
-        "f1": metrics.get("task2_kt_anchor_f1"),
-        "balanced_acc": metrics.get("task2_kt_anchor_balanced_accuracy"),
-        "specificity": metrics.get("task2_kt_anchor_specificity"),
-        "mcc": metrics.get("task2_kt_anchor_mcc"),
-        "auc": metrics.get("task2_kt_anchor_auc"),
-        "mean_probability": metrics.get("kt_state_predicted_correct_rate"),
-        "confusion": metrics.get("task2_kt_anchor_confusion"),
+        "count": metrics.get("count"),
+        "acc": metrics.get("ncdm_acc_at_threshold"),
+        "f1": metrics.get("ncdm_f1_at_threshold"),
+        "balanced_acc": metrics.get("ncdm_balanced_accuracy"),
+        "specificity": metrics.get("ncdm_specificity"),
+        "mcc": metrics.get("ncdm_mcc"),
+        "auc": metrics.get("ncdm_auc"),
+        "mean_probability": metrics.get("ncdm_predicted_correct_rate"),
+        "confusion": metrics.get("ncdm_confusion"),
     }
 
 

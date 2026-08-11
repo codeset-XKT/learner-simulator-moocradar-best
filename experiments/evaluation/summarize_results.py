@@ -100,8 +100,8 @@ def main() -> None:
                 "Learner Distribution Error and Concept Distribution Error."
             ),
             "task_consistency": (
-                "Attempt/state availability, knowledge concept selection, "
-                "KT-anchor consistency, response-generation consistency, and "
+                "Profile availability, knowledge concept selection, "
+                "response-generation consistency, and "
                 "state-evolution diagnostics when available."
             ),
             "diagnostic_consistency": (

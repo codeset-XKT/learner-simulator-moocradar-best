@@ -9,11 +9,9 @@ def build_item_conditioned_ability(
     profile_context: dict[str, Any],
     memory_context: dict[str, Any],
     proficiency: dict[str, Any] | None,
-    behavior_factors: dict[str, float] | None,
-    tendency_calibration: dict[str, Any] | None,
     irt_evidence: dict[str, Any] | None = None,
-    learning_tool_state: dict[str, Any] | None = None,
     historical_reflection: dict[str, Any] | None = None,
+    include_profile_evidence: bool = True,
 ) -> dict[str, Any]:
     """Describe how historical ability is activated by the current item.
 
@@ -22,22 +20,23 @@ def build_item_conditioned_ability(
     evidence, and uses proficiency/mastery as current-concept state evidence.
     """
 
-    cognitive = profile_context.get("cognitive_profile") or {}
-    ability = profile_context.get("ability_profile") or {}
+    cognitive = (
+        profile_context.get("cognitive_profile") or {}
+        if include_profile_evidence
+        else {}
+    )
+    ability = (
+        profile_context.get("ability_profile") or {}
+        if include_profile_evidence
+        else {}
+    )
     control = cognitive.get("control_traits") or {}
-    response_probability = _optional_float((proficiency or {}).get("response_probability"))
-    concept_mastery = _optional_float((proficiency or {}).get("concept_mastery_value"))
     mastery = _optional_float((proficiency or {}).get("value"))
-    readiness_probability = (
-        response_probability
-        if response_probability is not None
-        else mastery
-    )
-    kt_anchor = _kt_decision_anchor(
-        readiness_probability,
-        source=(proficiency or {}).get("response_probability_source")
-        or (proficiency or {}).get("source"),
-    )
+    # The simulator may retain an item-response probability for independent
+    # baseline evaluation, but item-conditioned evidence must use only the
+    # interpretable concept state. Otherwise Full indirectly receives the
+    # baseline's current-item prediction through qualitative labels.
+    readiness_probability = mastery
     item_demand_score = _item_demand_score(question)
     item_demand = _demand_level(item_demand_score)
     memory = _memory_support(question, memory_context)
@@ -87,79 +86,23 @@ def build_item_conditioned_ability(
         mastery=readiness_probability,
         item_demand=item_demand,
     )
-    ability_activation = _apply_learning_tool_state(
-        ability_activation,
-        learning_tool_state,
-    )
-    activation_level = ability_activation
 
-    if ability_activation == "available":
-        ability_expression = "fluent"
-    elif ability_activation == "limited":
-        ability_expression = "tentative"
-    else:
-        ability_expression = "bounded"
-
-    kt_proficiency_state = {
-        "concept": (proficiency or {}).get("concept"),
-        "source": (proficiency or {}).get("source"),
-        "value": kt_anchor["probability"],
-        "response_probability": kt_anchor["probability"],
-        "response_probability_source": (proficiency or {}).get(
-            "response_probability_source"
+    result = {
+        "module": "item_conditioned_integration",
+        "method": (
+            "proficiency_first_rule_based_activation_from_learner_memory_and_item"
+            if include_profile_evidence
+            else "proficiency_first_rule_based_activation_from_memory_and_item"
         ),
-        "concept_mastery_value": (
-            round(concept_mastery, 3)
-            if concept_mastery is not None
-            else round(mastery, 3)
-            if mastery is not None
-            else None
-        ),
-        "concept_mastery_source": (proficiency or {}).get("concept_mastery_source"),
-        "level": (proficiency or {}).get("level"),
-        "confidence_band": kt_anchor["confidence_band"],
-        "state_role": (
-            "current_item_response_readiness_not_sampled_response_label"
-        ),
-    }
-
-    return {
-        "module": "item_conditioned_ability",
-        "method": "proficiency_first_rule_based_activation_from_profile_memory_and_item",
         "knowledge_alignment": knowledge_alignment,
         "practice_alignment": practice_alignment,
         "demand_alignment": demand_alignment,
         "memory_support": memory_support,
         "ability_activation": ability_activation,
-        "ability_expression": ability_expression,
-        "activation_level": activation_level,
         "irt_relative_challenge": (irt_evidence or {}).get("relative_challenge"),
         "irt_boundary_band": (irt_evidence or {}).get("boundary_band"),
-        "learning_tool_state": _compact_learning_tool_state(learning_tool_state),
-        "kt_proficiency_state": kt_proficiency_state,
-        "kt_decision_anchor": kt_anchor,
-        "evidence_role": (
-            "qualitative_activation_profile_with_proficiency_as_current_state_not_posthoc_override"
-        ),
+        "evidence_role": "qualitative_item_activation_without_probability_duplication",
         "evidence": {
-            "concept": (proficiency or {}).get("concept"),
-            "kt_source": (proficiency or {}).get("source"),
-            "kt_probability": kt_anchor["probability"],
-            "current_item_response_probability": kt_anchor["probability"],
-            "current_item_response_source": (proficiency or {}).get(
-                "response_probability_source"
-            ),
-            "concept_mastery_value": (
-                round(concept_mastery, 3)
-                if concept_mastery is not None
-                else round(mastery, 3)
-                if mastery is not None
-                else None
-            ),
-            "kt_predicted_response": kt_anchor["predicted_response"],
-            "kt_confidence_band": kt_anchor["confidence_band"],
-            "kt_proficiency_state": kt_proficiency_state,
-            "mastery_level": (proficiency or {}).get("level"),
             "mastery_protected": _mastery_protected(
                 readiness_probability,
                 item_demand,
@@ -167,45 +110,43 @@ def build_item_conditioned_ability(
             "item_demand": item_demand,
             "item_demand_score": item_demand_score,
             "irt_ability_difficulty": _compact_irt_evidence(irt_evidence),
-            "learning_tool_state": _compact_learning_tool_state(learning_tool_state),
-            "historical_replay_calibration": _compact_historical_reflection(
-                historical_reflection
-            ),
             "practice_depth": ability.get("practice_depth"),
             "related_memory_count": memory["related_total"],
             "related_memory_outcome": memory["related_outcome"],
             "identical_correct_count": memory["identical_correct_count"],
             "knowledge_breadth": ability.get("knowledge_breadth"),
-            "practice_depth": ability.get("practice_depth"),
             "challenge_adaptation": ability.get("challenge_adaptation"),
             "mastery_stability": control.get("mastery_stability_level")
             or control.get("mastery_stability"),
         },
         "response_guidance": _response_guidance(
             ability_activation=ability_activation,
-            ability_expression=ability_expression,
             knowledge_alignment=knowledge_alignment,
             practice_alignment=practice_alignment,
             demand_alignment=demand_alignment,
             memory_support=memory_support,
         ),
     }
+    if not irt_evidence:
+        result.pop("irt_relative_challenge", None)
+        result.pop("irt_boundary_band", None)
+        result["evidence"].pop("irt_ability_difficulty", None)
+    return result
 
 
 def _response_guidance(
     ability_activation: str,
-    ability_expression: str,
     knowledge_alignment: str,
     practice_alignment: str,
     demand_alignment: str,
     memory_support: str,
 ) -> str:
-    if ability_expression == "fluent":
+    if ability_activation == "available":
         return (
             "The current item activates usable ability. Generate a concise "
             "learner-level attempt."
         )
-    if ability_expression == "tentative":
+    if ability_activation == "limited":
         return (
             "The current item activates limited ability. Use simpler reasoning "
             "or lower confidence, but do not assume the answer must be wrong."
@@ -230,40 +171,6 @@ def _compact_irt_evidence(irt_evidence: dict[str, Any] | None) -> dict[str, Any]
     }
 
 
-def _compact_learning_tool_state(
-    learning_tool_state: dict[str, Any] | None,
-) -> dict[str, Any] | None:
-    if not learning_tool_state:
-        return None
-    return {
-        "joint_readiness_state": learning_tool_state.get("joint_readiness_state"),
-        "decision_anchor": learning_tool_state.get("decision_anchor"),
-        "state_commitment": learning_tool_state.get("state_commitment"),
-        "response_planning": learning_tool_state.get("response_planning"),
-        "four_tier_generation_policy": learning_tool_state.get("four_tier_generation_policy"),
-        "knowledge_tool": learning_tool_state.get("knowledge_tool"),
-    }
-
-
-def _compact_historical_reflection(
-    historical_reflection: dict[str, Any] | None,
-) -> dict[str, Any] | None:
-    if not historical_reflection:
-        return None
-    policy = historical_reflection.get("adaptive_policy") or {}
-    return {
-        "available": historical_reflection.get("available"),
-        "bias_direction": historical_reflection.get("bias_direction"),
-        "error_pattern": historical_reflection.get("error_pattern"),
-        "evidence_confidence": historical_reflection.get("evidence_confidence"),
-        "actual_correct_rate": historical_reflection.get("actual_correct_rate"),
-        "predicted_correct_rate": historical_reflection.get("predicted_correct_rate"),
-        "response_bias": policy.get("response_bias"),
-        "ncdm_trust": policy.get("ncdm_trust"),
-        "slip_guess_policy": policy.get("slip_guess_policy"),
-    }
-
-
 def _apply_historical_replay_calibration(
     knowledge_alignment: str,
     memory: dict[str, Any],
@@ -274,7 +181,7 @@ def _apply_historical_replay_calibration(
 
     This is not target feedback and not a post-hoc label correction. It only
     changes how strict the simulator should be when interpreting a low/medium
-    NCDM mastery value for this learner.
+    current knowledge-state value for this learner.
     """
 
     if not historical_reflection or not historical_reflection.get("available"):
@@ -300,32 +207,6 @@ def _apply_historical_replay_calibration(
     return knowledge_alignment
 
 
-def _apply_learning_tool_state(
-    ability_activation: str,
-    learning_tool_state: dict[str, Any] | None,
-) -> str:
-    # The learning tool state is already represented as the KT decision anchor.
-    # Do not raise activation again here; that double-counts NCDM and makes the
-    # simulator more optimistic than the KT/CDM model itself.
-    return ability_activation
-
-
-def _raise_activation(value: str) -> str:
-    return {
-        "limited": "partial",
-        "partial": "available",
-        "available": "available",
-    }.get(value, value)
-
-
-def _lower_activation(value: str) -> str:
-    return {
-        "available": "partial",
-        "partial": "limited",
-        "limited": "limited",
-    }.get(value, value)
-
-
 def _apply_irt_relative_challenge(
     demand_alignment: str,
     irt_evidence: dict[str, Any] | None,
@@ -344,70 +225,8 @@ def _apply_irt_relative_challenge(
     return demand_alignment
 
 
-def _kt_decision_anchor(mastery: float | None, source: Any = None) -> dict[str, Any]:
-    if mastery is None:
-        return {
-            "source": source or "unavailable",
-            "probability": None,
-            "predicted_response": None,
-            "confidence_band": "unavailable",
-            "evidence_priority": "fallback",
-            "instruction": (
-                "No external KT probability is available; use learner profile, "
-                "memory, and item evidence."
-            ),
-        }
-    probability = min(1.0, max(0.0, float(mastery)))
-    anchor = _anchor_name(probability)
-    confidence_band = _anchor_confidence(anchor)
-    threshold_reference = int(probability >= 0.5)
-    return {
-        "source": source or "dynamic",
-        "probability": round(probability, 3),
-        "predicted_response": threshold_reference,
-        "threshold_reference_response": threshold_reference,
-        "anchor": anchor,
-        "direction": (
-            "correct" if probability >= 0.60
-            else "incorrect" if probability < 0.45
-            else "uncertain"
-        ),
-        "confidence_band": confidence_band,
-        "evidence_priority": (
-            "primary" if confidence_band in {"strong", "moderate"} else "secondary"
-        ),
-        "instruction": (
-            f"Use the KT state as the main symmetric decision anchor: {anchor}. "
-            "When the anchor is strong or moderate, LearnerCorrect should normally "
-            "follow its direction. Deviate only when concrete same-concept memory, "
-            "item demand, or learner profile evidence clearly contradicts it. "
-            "When the anchor is boundary, decide from memory, item demand, and profile."
-        ),
-    }
-
-
 def _mastery_protected(mastery: float | None, item_demand: str) -> bool:
     return mastery is not None and mastery >= 0.75 and item_demand in {"low", "medium"}
-
-
-def _anchor_name(probability: float) -> str:
-    if probability >= 0.75:
-        return "kt_strong_correct_anchor"
-    if probability >= 0.60:
-        return "kt_lean_correct_anchor"
-    if probability >= 0.45:
-        return "kt_boundary_anchor"
-    if probability >= 0.30:
-        return "kt_lean_incorrect_anchor"
-    return "kt_strong_incorrect_anchor"
-
-
-def _anchor_confidence(anchor: str) -> str:
-    if anchor in {"kt_strong_correct_anchor", "kt_strong_incorrect_anchor"}:
-        return "strong"
-    if anchor in {"kt_lean_correct_anchor", "kt_lean_incorrect_anchor"}:
-        return "moderate"
-    return "uncertain"
 
 
 def _item_demand_score(question: dict[str, Any]) -> int:
@@ -620,10 +439,6 @@ def _level_value(value: Any) -> int:
     if numeric >= 0.34:
         return 2
     return 1
-
-
-def _scale_level(value: int) -> float:
-    return {1: 0.25, 2: 0.55, 3: 0.85}.get(value, 0.55)
 
 
 def _optional_float(value: Any) -> float | None:

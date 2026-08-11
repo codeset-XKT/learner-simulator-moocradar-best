@@ -19,6 +19,8 @@ def main() -> None:
             "_meta": {
                 "concept_id_map": {"10": 0, "20": 1},
                 "exercise_id_map": {"1": 0, "2": 1},
+                "checkpoint_sha256": "abc123",
+                "state_alignment": "one_latent_state_after_each_observed_response",
             },
             "students": {
                 "u1": [
@@ -33,6 +35,8 @@ def main() -> None:
         assert proficiency.value("u1", 10) == 0.4
         assert proficiency.value("u1", 20, time_step=0) == 0.8
         assert proficiency.latest_values("u1") == {10: 0.4, 20: 0.9}
+        assert proficiency.sequence_length("u1") == 2
+        assert proficiency.checkpoint_sha256() == "abc123"
 
         simulator = RandomLearnerSimulator(dneuralcdm_proficiency_path=str(path))
         state, _ = simulator.initialize_from_history(

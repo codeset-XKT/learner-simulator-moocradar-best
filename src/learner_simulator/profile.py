@@ -45,7 +45,6 @@ class LearnerProfile:
 def build_learner_profiles(
     rows: list[dict[str, str]],
     questions: dict[str, dict[str, Any]] | None = None,
-    ability_estimator: Any | None = None,
     normalization_rows: list[dict[str, str]] | None = None,
 ) -> dict[str, LearnerProfile]:
     sequences = [(row["uid"], clean_sequence(row)) for row in rows]

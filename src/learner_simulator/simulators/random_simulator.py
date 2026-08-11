@@ -133,7 +133,6 @@ class RandomLearnerSimulator:
         self.profiles = build_learner_profiles(
             rows,
             questions,
-            ability_estimator=self.irt_model,
             normalization_rows=profile_normalization_rows,
         )
 

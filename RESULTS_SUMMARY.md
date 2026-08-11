@@ -1,7 +1,7 @@
 # Results Summary
 
 This file records the main fixed-cohort results that should be used for project
-handoff and method comparison. Snapshot date: 2026-08-01.
+handoff and method comparison. Snapshot date: 2026-08-11.
 
 ## Reading The Metrics
 
@@ -11,49 +11,31 @@ handoff and method comparison. Snapshot date: 2026-08-01.
   correct and incorrect responses.
 - LDE and CDE measure distribution consistency; lower is better.
 
-## MoocRadar Anchor-Consistency 30x10
+## Current Fair-Ablation Evidence
 
-Current locked version:
-`VERSION_LOCK_MOOCRADAR_ANCHOR_CONSISTENCY.md`
-(`baseline-2026-08-01-moocradar-anchor-consistency-v1`).
+The active code lock is `VERSION_LOCK_MOOCRADAR_FAIR_ABLATION.md`. Formal
+MoocRadar runs use ten disjoint 50x10 cohorts and one NCDM checkpoint trained
+while excluding all 500 planned evaluation learners. Batches 02 and 03 have
+complete, repaired 500-step Full plus four-core-ablation reports under this
+unified checkpoint.
 
-Protocol: 90 observed history interactions and 10 teacher-forcing target
-simulations for each of 30 learners. Both cohorts below use only single-answer
-target items.
+| Batch | Variant | ACC | F1 | Balanced Acc | Specificity | MCC | LDE | CDE |
+|---:|---|---:|---:|---:|---:|---:|---:|---:|
+| 02 | Full | 89.60% | 94.13% | 75.04% | 56.36% | 0.486 | 0.064 | 0.115 |
+| 02 | w/o learner-state profile | 89.60% | 94.12% | 75.83% | 58.18% | 0.494 | 0.068 | 0.099 |
+| 02 | w/o item-conditioned integration | 90.00% | 94.37% | 75.26% | 56.36% | 0.497 | 0.060 | 0.109 |
+| 02 | w/o Four-tier | 88.60% | 93.59% | 71.29% | 49.09% | 0.422 | 0.066 | 0.121 |
+| 02 | w/o dynamic state evolution | 88.60% | 93.56% | 72.88% | 52.73% | 0.441 | 0.074 | 0.120 |
+| 03 | Full | 85.00% | 91.02% | 72.67% | 54.22% | 0.456 | 0.070 | 0.110 |
+| 03 | w/o learner-state profile | 86.40% | 91.85% | 75.44% | 59.04% | 0.509 | 0.064 | 0.121 |
+| 03 | w/o item-conditioned integration | 85.00% | 90.97% | 73.64% | 56.63% | 0.466 | 0.070 | 0.117 |
+| 03 | w/o Four-tier | 85.40% | 91.28% | 72.91% | 54.22% | 0.465 | 0.074 | 0.112 |
+| 03 | w/o dynamic state evolution | 85.40% | 91.19% | 74.84% | 59.04% | 0.485 | 0.066 | 0.119 |
 
-### Normal Batch
-
-Fixed cohort:
-`experiments/cohorts/moocradar_90_10_30x10_single_answer_targets.json`.
-True target correct rate: 92.33%.
-
-| Method | ACC | F1 | Balanced Acc | Specificity | MCC | LDE | CDE | Predicted Correct Rate | Confusion |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
-| Ours Full anchor-consistency | 94.65% | 97.14% | 75.18% | 52.17% | 0.580 | 0.040 | 0.112 | 94.33% | TN12 / FP11 / FN5 / TP272 |
-| Ours Full previous Task4 | 95.00% | 97.36% | 67.39% | 34.78% | 0.574 | 0.050 | 0.134 | 97.33% | not recorded here |
-| Probability-sampling baseline | 76.67% | 86.38% | 57.46% | 34.78% | 0.098 | 0.167 | 0.219 | 79.00% | not recorded here |
-| DKT direct | 95.33% | 97.52% | 73.55% | 47.83% | 0.616 | - | - | 95.67% | not recorded here |
-| NCDM direct | 94.33% | 96.97% | 73.01% | 47.83% | 0.545 | - | - | 94.67% | not recorded here |
-
-### Medium-Difficulty Batch
-
-Fixed cohort:
-`experiments/cohorts/moocradar_90_10_30x10_single_answer_medium60_70.json`.
-True target correct rate: 66.00%.
-
-| Method | ACC | F1 | Balanced Acc | Specificity | MCC | LDE | CDE | Predicted Correct Rate | Confusion |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
-| Ours Full anchor-consistency | 69.57% | 77.97% | 64.19% | 47.06% | 0.298 | 0.157 | 0.301 | 71.67% | TN48 / FP54 / FN37 / TP161 |
-| Ours Full previous Task4 | 68.00% | 78.76% | 57.69% | 25.49% | 0.202 | 0.247 | 0.331 | 84.67% | not recorded here |
-| Probability-sampling baseline | 52.67% | 58.72% | 53.45% | 55.88% | 0.065 | 0.233 | 0.378 | 48.67% | not recorded here |
-| DKT direct | 71.33% | 79.52% | 65.21% | 46.08% | 0.329 | - | - | 74.00% | not recorded here |
-| NCDM direct | 70.67% | 78.43% | 65.89% | 50.98% | 0.329 | - | - | 70.00% | not recorded here |
-
-Interpretation: anchor-consistency fixes the previous Task4 prompt's
-over-correct tendency. On the normal single-answer batch, it beats direct NCDM
-on Balanced Accuracy and Specificity and is close to DKT on ACC/F1. On the
-medium-difficulty batch, it approaches DKT/NCDM balanced performance while
-keeping the LLM as the final Task4 decision source.
+These two batches are implementation verification, not sufficient evidence that
+every retained module improves every response metric. Batch 01 used an older
+single-batch NCDM exclusion scope and must be rerun before aggregation with this
+table.
 
 ## MoocRadar Medium70 10x10
 

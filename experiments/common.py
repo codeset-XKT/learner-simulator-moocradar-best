@@ -4,6 +4,8 @@ import argparse
 import json
 import sys
 import time
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -49,15 +51,16 @@ def add_shared_arguments(parser: argparse.ArgumentParser) -> None:
         default=None,
         help=(
             "Optional path to DNeuralCDM stu_know_proficiency.json or its directory. "
-            "When provided, it initializes concept mastery before target simulation."
+            "Used only by legacy simulators and baselines; multi-role Full ignores it."
         ),
     )
     parser.add_argument(
         "--dneuralcdm-checkpoint",
         default=None,
         help=(
-            "Optional DNeuralCDM best_model.pt checkpoint. Multi-role Full uses it "
-            "to compute current-item response probability before each simulated step."
+            "DNeuralCDM best_model.pt checkpoint. Multi-role Full uses this single "
+            "artifact for history-conditioned concept state; its item-response "
+            "probability is retained only for independent baseline evaluation."
         ),
     )
     parser.add_argument(
@@ -78,8 +81,32 @@ def add_shared_arguments(parser: argparse.ArgumentParser) -> None:
             "and takes precedence over DNeuralCDM unless MIKT is also provided."
         ),
     )
-    parser.add_argument("--include-prompt", action="store_true")
-    parser.add_argument("--save-steps", action="store_true")
+    parser.add_argument(
+        "--include-prompt",
+        dest="include_prompt",
+        action="store_true",
+        default=True,
+        help="Save the complete user and system prompts for every simulated step (default).",
+    )
+    parser.add_argument(
+        "--no-include-prompt",
+        dest="include_prompt",
+        action="store_false",
+        help="Do not save prompts. Intended only for short local debugging runs.",
+    )
+    parser.add_argument(
+        "--save-steps",
+        dest="save_steps",
+        action="store_true",
+        default=True,
+        help="Save every per-step simulation trace in all_steps (default).",
+    )
+    parser.add_argument(
+        "--no-save-steps",
+        dest="save_steps",
+        action="store_false",
+        help="Save only sample steps. Intended only for short local debugging runs.",
+    )
     parser.add_argument("--progress", action="store_true")
     parser.add_argument("--output", default=None)
     parser.add_argument(
@@ -92,6 +119,14 @@ def add_shared_arguments(parser: argparse.ArgumentParser) -> None:
         type=int,
         default=None,
         help="Use only the first N learners from a saved cohort.",
+    )
+    parser.add_argument(
+        "--simulate-uids",
+        default=None,
+        help=(
+            "Comma-separated learner UIDs to simulate after fitting on the complete "
+            "loaded cohort. Intended for fit-consistent sequence repair runs."
+        ),
     )
     parser.add_argument(
         "--save-cohort",
@@ -114,6 +149,7 @@ def load_fixed_cohort(args: argparse.Namespace) -> tuple[
     list[dict[str, str]],
     list[dict[str, str]],
 ]:
+    initialize_experiment_run(args)
     dataset_root = Path(args.dataset_root)
     if args.cohort_file:
         cohort_path = resolve_project_path(args.cohort_file)
@@ -123,10 +159,18 @@ def load_fixed_cohort(args: argparse.Namespace) -> tuple[
         history_rows = list(cohort["history_rows"])
         target_rows = list(cohort["target_rows"])
         source_rows_scanned = int(cohort.get("source_rows_scanned", args.source_rows))
-        args.profile_normalization_rows = take_sequence_rows(
+        normalization_source = take_sequence_rows(
             dataset_root / "kc_level" / "train_valid_sequences.csv",
             source_rows_scanned,
         )
+        args.profile_normalization_rows = exclude_cohort_users(
+            normalization_source,
+            history_rows,
+        )
+        if not args.profile_normalization_rows:
+            raise ValueError(
+                "Profile normalization requires source learners outside the fixed cohort"
+            )
         validate_cohort(
             history_rows,
             target_rows,
@@ -145,7 +189,6 @@ def load_fixed_cohort(args: argparse.Namespace) -> tuple[
         dataset_root / "kc_level" / "train_valid_sequences.csv",
         args.source_rows,
     )
-    args.profile_normalization_rows = source
     history_rows, target_rows = split_rows_agent4edu(
         source,
         history_steps=args.history_steps,
@@ -156,6 +199,11 @@ def load_fixed_cohort(args: argparse.Namespace) -> tuple[
         raise RuntimeError(
             "No eligible learners found. Increase --source-rows; every learner needs at least "
             f"{args.history_steps + args.target_steps} interactions."
+        )
+    args.profile_normalization_rows = exclude_cohort_users(source, history_rows)
+    if not args.profile_normalization_rows:
+        raise ValueError(
+            "Profile normalization requires source learners outside the sampled cohort"
         )
     if args.save_cohort:
         save_cohort(
@@ -223,6 +271,14 @@ def resolve_project_path(path: str | Path) -> Path:
     return resolved if resolved.is_absolute() else ROOT / resolved
 
 
+def exclude_cohort_users(
+    source_rows: list[dict[str, str]],
+    cohort_history_rows: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    cohort_uids = {str(row["uid"]) for row in cohort_history_rows}
+    return [row for row in source_rows if str(row["uid"]) not in cohort_uids]
+
+
 def simulator_kwargs(args: argparse.Namespace) -> dict[str, Any]:
     return {
         "seed": args.seed,
@@ -254,6 +310,7 @@ def run_experiment(
     modules: dict[str, bool] | None = None,
     progress_name: str | None = None,
 ) -> dict[str, Any]:
+    initialize_experiment_run(args)
     modules = modules or {}
     kwargs = simulator_kwargs(args)
     llm_config = None
@@ -263,6 +320,11 @@ def run_experiment(
         simulator = LLMLearnerSimulator(**kwargs)
         llm_config = load_json(ROOT / args.llm_config)
     elif name == "multi-role":
+        # Full computes its NCDM state directly from one checkpoint. Do not
+        # silently inject legacy DKT/MIKT or exported-proficiency artifacts.
+        kwargs["dneuralcdm_proficiency_path"] = None
+        kwargs["mikt_proficiency_path"] = None
+        kwargs["dkt_proficiency_path"] = None
         simulator = MultiRoleLearnerSimulator(**kwargs)
         llm_config = load_json(ROOT / args.llm_config)
     elif name == "agent4edu":
@@ -279,12 +341,20 @@ def run_experiment(
         profile_normalization_rows=getattr(args, "profile_normalization_rows", None),
     )
     history_by_uid = {row["uid"]: row for row in history_rows}
-    total_steps = sum(len(clean_sequence(row)) for row in target_rows)
+    simulation_target_rows = _select_simulation_targets(
+        target_rows,
+        getattr(args, "simulate_uids", None),
+    )
+    simulation_uids = {str(row["uid"]) for row in simulation_target_rows}
+    simulation_history_rows = [
+        row for row in history_rows if str(row["uid"]) in simulation_uids
+    ]
+    total_steps = sum(len(clean_sequence(row)) for row in simulation_target_rows)
     progress = make_progress(progress_name or name, total_steps, enabled=args.progress)
     simulations: list[dict[str, Any]] = []
     started = time.perf_counter()
 
-    for row in target_rows:
+    for row in simulation_target_rows:
         history_row = history_by_uid[row["uid"]]
         if name == "random":
             simulation = simulator.simulate_sequence(
@@ -309,6 +379,14 @@ def run_experiment(
                     "item_conditioned_ability",
                     True,
                 )
+                extra_module_kwargs["include_ncdm_evidence"] = modules.get(
+                    "ncdm_evidence",
+                    True,
+                )
+                extra_module_kwargs["include_dynamic_state_evolution"] = modules.get(
+                    "dynamic_state_evolution",
+                    True,
+                )
             simulation = simulator.simulate_sequence(
                 row,
                 questions=questions,
@@ -318,22 +396,19 @@ def run_experiment(
                 progress_callback=progress,
                 history_row=history_row,
                 response_format=(
-                    "four_tier" if modules.get("four_tier", True) else "answer_only"
+                    "four_tier"
+                    if modules.get("four_tier", True)
+                    else "reduced_response"
                 ),
                 include_profile=modules.get("profile", True),
                 include_memory=modules.get("memory", True),
-                include_proficiency=modules.get("proficiency", True),
-                include_behavior=modules.get("behavior", True),
-                include_cognitive_strategy=modules.get("cognitive_strategy", True),
                 include_cognitive_profile=modules.get("cognitive_profile", True),
                 include_ability_profile=modules.get("ability_profile", True),
                 include_irt_evidence=modules.get("irt_evidence", True),
-                include_learning_tool_state=modules.get("learning_tool_state", True),
                 include_historical_reflection=modules.get(
                     "historical_reflection",
                     True,
                 ),
-                include_dkt_predictor=modules.get("dkt_predictor", False),
                 feedback_mode=args.feedback_mode,
                 **extra_module_kwargs,
             )
@@ -341,8 +416,10 @@ def run_experiment(
 
     elapsed = time.perf_counter() - started
     steps = flatten_simulations(simulations)
+    metric_steps, excluded_uids = valid_metric_steps(name, steps)
     report = {
         "experiment": name,
+        "archive": build_archive_metadata(args, llm_config),
         "protocol": {
             "name": "agent4edu_fixed_history",
             "grouping_unit": "unique_uid",
@@ -351,13 +428,20 @@ def run_experiment(
             "feedback_mode": args.feedback_mode,
         },
         "modules": modules,
-        "unique_simulated_users": len(target_rows),
-        "history_summary": summarize_sequences(history_rows),
-        "target_summary": summarize_sequences(target_rows),
+        "unique_simulated_users": len(simulation_target_rows),
+        "history_summary": summarize_sequences(simulation_history_rows),
+        "target_summary": summarize_sequences(simulation_target_rows),
+        "fit_cohort_summary": summarize_sequences(history_rows),
         "simulator_summary": simulator.summary(),
-        "metrics": evaluate_steps(steps, threshold=args.threshold),
+        "metrics": evaluate_steps(metric_steps, threshold=args.threshold),
         "runtime": runtime_summary(steps, elapsed),
         "validity": validity_summary(name, steps),
+        "metric_population": {
+            "included_steps": len(metric_steps),
+            "excluded_steps": len(steps) - len(metric_steps),
+            "excluded_uids": excluded_uids,
+            "policy": "exclude_entire_learner_sequence_after_any_llm_failure",
+        },
         "sample_steps": steps[:20],
     }
     report["metric_layers"] = layered_metric_view(
@@ -385,16 +469,118 @@ def run_experiment(
     return report
 
 
+def _select_simulation_targets(
+    target_rows: list[dict[str, str]],
+    requested_uids: str | None,
+) -> list[dict[str, str]]:
+    if not requested_uids:
+        return target_rows
+    requested = {
+        item.strip() for item in requested_uids.split(",") if item.strip()
+    }
+    selected = [row for row in target_rows if str(row["uid"]) in requested]
+    found = {str(row["uid"]) for row in selected}
+    missing = sorted(requested - found)
+    if missing:
+        raise ValueError(f"Requested simulation UIDs are absent from the cohort: {missing}")
+    if not selected:
+        raise ValueError("--simulate-uids selected no learners")
+    return selected
+
+
 def save_report(report: dict[str, Any], output: str | Path) -> Path:
-    path = Path(output)
-    if not path.is_absolute():
-        path = ROOT / path
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(report, ensure_ascii=False, indent=2),
-        encoding="utf-8",
+    requested_path = Path(output)
+    if not requested_path.is_absolute():
+        requested_path = ROOT / requested_path
+    requested_path.parent.mkdir(parents=True, exist_ok=True)
+
+    payload = json.dumps(report, ensure_ascii=False, indent=2)
+    path = requested_path
+    while True:
+        try:
+            with path.open("x", encoding="utf-8") as file:
+                file.write(payload)
+            return path
+        except FileExistsError:
+            path = versioned_report_path(requested_path)
+
+
+def initialize_experiment_run(args: argparse.Namespace) -> None:
+    """Attach one stable run identity before any parallel variants start."""
+
+    if getattr(args, "experiment_run_id", None):
+        return
+    started = datetime.now(timezone.utc)
+    args.experiment_run_id = (
+        f"{started.strftime('%Y%m%dT%H%M%S.%fZ')}-{uuid.uuid4().hex[:8]}"
     )
-    return path
+    args.experiment_started_at_utc = started.isoformat()
+
+
+def build_archive_metadata(
+    args: argparse.Namespace,
+    llm_config: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Describe everything needed to audit a saved run without storing secrets."""
+
+    return {
+        "schema_version": "experiment-trace-v1",
+        "run_id": args.experiment_run_id,
+        "started_at_utc": args.experiment_started_at_utc,
+        "report_created_at_utc": datetime.now(timezone.utc).isoformat(),
+        "command": [str(value) for value in sys.argv],
+        "arguments": sanitized_arguments(args),
+        "llm_config": redact_secrets(llm_config),
+        "storage_policy": {
+            "all_steps_saved": bool(args.save_steps),
+            "prompts_saved": bool(args.include_prompt),
+            "existing_files_overwritten": False,
+        },
+    }
+
+
+def sanitized_arguments(args: argparse.Namespace) -> dict[str, Any]:
+    excluded = {"profile_normalization_rows"}
+    values = {
+        key: value
+        for key, value in vars(args).items()
+        if key not in excluded
+    }
+    return redact_secrets(values)
+
+
+def redact_secrets(value: Any) -> Any:
+    if isinstance(value, dict):
+        redacted: dict[str, Any] = {}
+        for key, item in value.items():
+            normalized = str(key).lower()
+            secret_key = (
+                "api_key" in normalized
+                or "secret" in normalized
+                or "password" in normalized
+                or "authorization" in normalized
+                or normalized in {"token", "access_token", "refresh_token"}
+                or normalized.endswith("_token")
+            )
+            if secret_key:
+                redacted[str(key)] = "<redacted>"
+            else:
+                redacted[str(key)] = redact_secrets(item)
+        return redacted
+    if isinstance(value, (list, tuple)):
+        return [redact_secrets(item) for item in value]
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
+def versioned_report_path(requested_path: Path) -> Path:
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    suffix = requested_path.suffix or ".json"
+    stem = requested_path.stem if requested_path.suffix else requested_path.name
+    return requested_path.with_name(f"{stem}__{timestamp}{suffix}")
 
 
 def metric_view(report: dict[str, Any]) -> dict[str, Any]:
@@ -422,10 +608,6 @@ def metric_view(report: dict[str, Any]) -> dict[str, Any]:
         "prob_f1": metrics.get("prob_f1_at_threshold"),
         "llm_valid_count": metrics.get("llm_response_count"),
         "task2_concept_accuracy": metrics.get("task2_concept_accuracy"),
-        "task2_kt_anchor_acc": metrics.get("task2_kt_anchor_acc"),
-        "task2_kt_anchor_balanced_accuracy": metrics.get(
-            "task2_kt_anchor_balanced_accuracy"
-        ),
         "task3_response_acc": metrics.get("task3_response_acc"),
         "task3_response_balanced_accuracy": metrics.get(
             "task3_response_balanced_accuracy"
@@ -471,6 +653,25 @@ def validity_summary(name: str, steps: list[dict[str, Any]]) -> dict[str, Any]:
         "parsed_llm_steps": parsed,
         "llm_error_count": errors,
     }
+
+
+def valid_metric_steps(
+    name: str,
+    steps: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Prevent fallback values from entering LLM-method performance metrics."""
+
+    if name == "random":
+        return steps, []
+    invalid_uids = {
+        str(step["uid"])
+        for step in steps
+        if step.get("llm_error") or not step.get("prediction_valid", True)
+    }
+    return (
+        [step for step in steps if str(step["uid"]) not in invalid_uids],
+        sorted(invalid_uids),
+    )
 
 
 def make_progress(name: str, total: int, enabled: bool):

@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from experiments.common import (
+from experiments.common import (  # noqa: E402
     add_shared_arguments,
     load_fixed_cohort,
     metric_view,

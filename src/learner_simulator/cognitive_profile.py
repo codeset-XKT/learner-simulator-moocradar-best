@@ -21,7 +21,6 @@ def build_cognitive_profile(
 
     questions = questions or {}
     history = list(sequence)
-    total = len(history)
     responses = [int(step["response"]) for step in history]
     overall_success = _mean(responses, default=0.5)
     recent = responses[-recent_window:] if responses else []

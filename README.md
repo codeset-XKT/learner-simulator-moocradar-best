@@ -7,48 +7,42 @@ against Agent4Edu-style and probability-sampling baselines on fixed cohorts.
 ## Current Method
 
 The current research method is exposed as the `multi-role` baseline name for
-backward compatibility. Internally it is now a compact three-stage educational
-simulation evidence pipeline:
+backward compatibility. It is a compact process-oriented learner simulator:
 
 ```text
 Learner Profile Encoder
-NCDM Knowledge State Encoder
-IRT Ability-Difficulty Evidence
-Learning Tool State Encoder
-Item-conditioned Evidence Encoder
-Four-tier Response Simulator
+NCDM State Evidence + IRT Evidence + Observed-history Replay
+Item-conditioned Evidence Integration
+Four-tier Learner Response Generation
+Dynamic State Evolution
 ```
 
 - Learner Profile Encoder: stable learner-level traits derived from observed
-  history, including general performance, stability, error tendency,
-  affective-state proxies, transfer traits, and broad ability traits.
-- NCDM Knowledge State Encoder: DNeuralCDM/NCDM proficiency is the required
-  knowledge-state source for the paper-oriented `multi-role` Full method.
-  Dynamic mastery is retained only for baselines, fallback ablations, and
-  internal diagnostics.
+  history, represented as non-overlapping cognitive and ability summaries.
+- NCDM State Evidence: one trained DNeuralCDM checkpoint is the canonical
+  knowledge-state source. Full infers the initial concept state directly from
+  the observed sequence and uses the same checkpoint for current-item response
+  probability and target-stage state evolution. It does not consume DKT, MIKT,
+  or an exported proficiency JSON.
 - IRT Ability-Difficulty Evidence: a Rasch/1PL module estimates learner ability
   `theta`, item difficulty `beta`, and their relative challenge from observed
   history. It is exposed to the LLM as ability-versus-difficulty evidence, not
   as concept mastery, not as `p_correct`, and not as a sampled correctness
   label.
-- Learning Tool State Encoder: an Agent4Edu-style tool-conditioning layer. The
-  current NCDM concept state is treated as the primary knowledge-state tool,
-  while IRT relative challenge and observed related memory act as secondary
-  modifiers of confidence, effort, and reasoning depth. Unlike Agent4Edu's
-  Task4 Yes/No prediction, this layer conditions Four-tier response generation:
-  answer, answer confidence, reasoning, and reasoning confidence.
-- Item-conditioned Evidence Encoder: interaction-level evidence derived from
-  the current item, NCDM proficiency state, IRT relative challenge, related
-  practice memory, item demand, and transfer burden.
+- Item-conditioned Evidence Integration: a qualitative summary of profile,
+  related memory, current concept readiness, IRT challenge, and item demand.
+  It does not duplicate the raw NCDM probability or prescribe a label.
 - Historical Reflective Calibration: the observed history is internally split
   into 80 prefix interactions and 10 replay interactions under the default
   90-history protocol. Replay uses the NCDM state after the prefix and never
   uses target labels.
-- NCDM State Evolution: Task4 updates the NCDM-initialized runtime knowledge
-  state after each target interaction using the selected feedback mode.
-- Four-tier Response Simulator: LLM generation of `StudentAnswer`,
-  `AnswerConfidence`, `StudentReasoning`, and `ReasoningConfidence`; correctness
-  is scored externally against question metadata for evaluation only.
+- Four-tier Response Generation: the LLM first outputs `LearnerCorrect`, then
+  renders `StudentAnswer`, confidence, and reasoning tiers. The reference answer
+  is exposed only for answer rendering after that decision; external answer
+  matching is retained as a consistency diagnostic.
+- Dynamic State Evolution: after each target interaction, the selected rollout
+  or teacher-forcing feedback updates memory and recomputes the latent NCDM
+  state from the complete accepted prefix.
 
 The Full/LLM simulator still exists as a historical baseline. The current
 paper-oriented method should use `multi-role` unless a locked baseline document
@@ -68,12 +62,17 @@ Rules:
 - Aggregate rows by unique UID and sort interactions chronologically.
 - Use interactions 1-90 as observed history and 91-100 as simulation targets.
 - Use the same learners and target interactions for every baseline and ablation.
-- Score `StudentAnswer` externally; do not let the LLM self-label correctness.
-- Do not feed `p_correct`, sampled labels, reference answers, or reference
-  analyses into this project's full or multi-role prompts.
+- Use the LLM's structured `LearnerCorrect` field as the simulated response;
+  never replace a disagreement with an NCDM/DKT threshold decision.
+- Do not feed random-baseline `p_correct`, sampled labels, target labels, or
+  reference analyses into the `multi-role` prompt. A reference answer may be
+  supplied only after the correctness-decision instruction for rendering a
+  valid submitted answer.
 - The paper-oriented `multi-role` Full run requires
-  `--dneuralcdm-proficiency`. Runs without NCDM should be reported as
-  dynamic-only/proficiency ablations rather than Full.
+  `--dneuralcdm-checkpoint`. The exported `--dneuralcdm-proficiency`, DKT, and
+  MIKT paths are ignored by this method. The checkpoint must be trained with
+  the same `--cohort-file`; Full rejects old checkpoints that cannot prove each
+  evaluated learner was excluded from training.
 - Agent4Edu reproduction may expose reference answers and analyses because its
   official action prompt does so; reports mark that leakage explicitly.
 
@@ -88,22 +87,24 @@ Target-step feedback is controlled by:
 scores the prediction but feeds the ground-truth target response into state and
 memory before the next target step.
 
-## Locked Baselines
+## Version Locks
 
-Three baselines are fixed and should be read before changing prompt logic,
-profile modules, simulator decision logic, or ablation wiring:
+The active paper-oriented implementation is frozen in
+`VERSION_LOCK_MOOCRADAR_FAIR_ABLATION.md`. It uses the ten disjoint MoocRadar
+50x10 cohorts and one leakage-safe NCDM checkpoint trained while excluding all
+500 planned evaluation learners.
+
+Two historical baselines are fixed and should be read before changing prompt
+logic, profile modules, simulator decision logic, or ablation wiring:
 
 - `VERSION_LOCK.md`: FoundationalAssist calibrated Full baseline,
   `baseline-2026-07-04-foundationalassist-calibrated-v1`.
 - `VERSION_LOCK_MOOCRADAR.md`: historical MoocRadar ability-summary baseline,
   `baseline-2026-07-04-moocradar-ability-summary-no-irt-v1`.
-- `VERSION_LOCK_MOOCRADAR_ANCHOR_CONSISTENCY.md`: current MoocRadar
-  anchor-consistency Full simulator,
-  `baseline-2026-08-01-moocradar-anchor-consistency-v1`.
 
-The current result ledger is `RESULTS_SUMMARY.md`. The latest locked MoocRadar
-single-answer 30x10 normal and medium-difficulty results are documented in
-`VERSION_LOCK_MOOCRADAR_ANCHOR_CONSISTENCY.md`.
+The current result ledger is `RESULTS_SUMMARY.md`. The latest medium-correct-rate
+MoocRadar fixed-cohort result is documented in
+`docs/moocradar_medium70_balanced_state.md`.
 
 ## Datasets
 
@@ -147,13 +148,44 @@ $env:DASHSCOPE_API_KEY=(Get-Content -Raw -LiteralPath 'E:\yyx\8 Learner Simulato
 Current development config at the time of this cleanup:
 
 - provider: OpenAI-compatible
-- model: `deepseek-v4-flash`
+- model: `deepseek-v4-flash-0731`
 - base URL: Aliyun Bailian compatible endpoint
-- temperature: `0.2`
+- temperature: `0.0`
 - streaming: enabled
 - thinking: enabled
 
 ## Running Comparisons
+
+Train a leakage-safe NCDM checkpoint for the fixed cohort before the first
+formal run (the trainer preserves the true best-validation epoch):
+
+Newly trained checkpoints use the corrected `architecture_version=2`: exercise
+discrimination is constrained positive, padded sequence positions are excluded
+from both loss and validation metrics, and the best epoch is selected by
+valid-position validation BCE. Legacy checkpoints remain loadable with their
+original forward semantics for historical-result reproduction.
+
+```powershell
+python scripts\train_dneuralcdm.py `
+  --dataset-root data\moocradar `
+  --cohort-file experiments\cohorts\moocradar_500x10_batches\moocradar_500x10_all_500users_seed20260803.json `
+  --output-dir outputs\dneuralcdm\moocradar_500plan_leakage_safe_v2_posdisc_masked_e30_d32_h64 `
+  --epochs 30 `
+  --embedding-dim 32 `
+  --hidden-dim 64
+```
+
+If an otherwise complete LLM run contains a few transient API/format failures,
+rerun the affected learners with `--simulate-uids`, then merge only complete
+learner sequences:
+
+```powershell
+python scripts\merge_sequence_repairs.py `
+  --base outputs\ablation\main\combined.json `
+  --repair outputs\ablation\main\repairs\combined.json `
+  --variant full `
+  --output outputs\ablation\main\combined_repaired.json
+```
 
 Run current multi-role, Agent4Edu, and probability-sampling baselines on a fixed
 cohort. The command-line name is still `random` for backward compatibility, but
@@ -164,11 +196,10 @@ from an estimated `p_correct`, not from a uniform 0.5 coin flip:
 python experiments\comparison\run_comparison.py `
   --baselines multi-role,agent4edu,random `
   --dataset-root data\moocradar `
-  --cohort-file experiments\cohorts\moocradar_90_10_10x10.json `
-  --dkt-proficiency outputs\dkt\moocradar_full_e50_h100\moocradar_90_10_10x10_proficiency.json `
+  --cohort-file experiments\cohorts\moocradar_500x10_batches\moocradar_500x10_batch01_50x10_seed20260803.json `
+  --dneuralcdm-checkpoint outputs\dneuralcdm\moocradar_500plan_leakage_safe_v2_posdisc_masked_e30_d32_h64\best_model.pt `
   --feedback-mode teacher-forcing `
-  --progress `
-  --save-steps
+  --progress
 ```
 
 Run only the current multi-role simulator on FoundationalAssist:
@@ -178,7 +209,7 @@ python experiments\comparison\run_comparison.py `
   --baselines multi-role `
   --dataset-root data\foundationalassist `
   --cohort-file experiments\cohorts\foundationalassist_90_10_10x10.json `
-  --dkt-proficiency outputs\dkt\foundationalassist_e50_h100\foundationalassist_90_10_10x10_proficiency.json `
+  --dneuralcdm-checkpoint outputs\dneuralcdm\foundationalassist_90_10_10x10_medium65_e30_d32_h64\best_model.pt `
   --feedback-mode teacher-forcing `
   --progress `
   --output outputs\comparison\foundationalassist_10x10_multi_role_ability_evidence_teacher_forcing.json
@@ -191,15 +222,36 @@ configuration, and external scoring:
 
 ```powershell
 python experiments\ablation\run_ablation.py `
-  --cohort-file experiments\cohorts\moocradar_90_10_10x10.json `
-  --variants full,no-profile,no-memory,no-proficiency,no-four-tier,no-cognitive-selection,no-cognitive-profile,no-ability-profile,no-irt-evidence,no-learning-tool-state `
+  --simulator multi-role `
+  --dataset-root data\moocradar `
+  --cohort-file experiments\cohorts\moocradar_500x10_batches\moocradar_500x10_batch01_50x10_seed20260803.json `
+  --dneuralcdm-checkpoint outputs\dneuralcdm\moocradar_500plan_leakage_safe_v2_posdisc_masked_e30_d32_h64\best_model.pt `
+  --variants full,no-learner-state-profile,no-item-conditioned-integration,no-four-tier,no-dynamic-state-evolution `
   --parallel-variants 2 `
-  --progress `
-  --save-steps
+  --progress
 ```
+
+The supplementary knowledge-state-source variants are `no-ncdm`, `no-irt`,
+and `no-ncdm-irt`. The paper-facing ablations preserve a common response task:
+
+- `no-four-tier` uses the reduced-response contract, retaining `LearnerCorrect`,
+  reference-answer rendering, and the same primary response label while removing
+  reasoning, confidence, and Four-tier diagnosis.
+- `no-item-conditioned-integration` removes only the qualitative integration
+  section. Item-conditioned evidence never consumes the NCDM current-item
+  response probability; that probability is retained only for external metrics.
+- `no-dynamic-state-evolution` freezes the prompt-facing latent knowledge state
+  while preserving the same teacher-forced response prefix and target-memory
+  updates as Full. It does not change teacher forcing into rollout.
 
 Long ablation runs save per-variant checkpoints under the configured checkpoint
 directory as each variant finishes.
+
+All experiment entry points save every per-step trace and complete prompt by
+default. Reports include a secret-redacted run manifest. Existing report and
+checkpoint files are never overwritten; reruns with the same output name create
+a timestamped sibling file. Use `--no-save-steps` or `--no-include-prompt` only
+for temporary debugging runs where a compact report is intentional.
 
 ## Project Layout
 
@@ -223,10 +275,10 @@ Key source modules:
 - `agent4edu_baseline.py`: Agent4Edu-style baseline prompt and parsing.
 - `cognitive_profile.py`: statistical cognitive profile.
 - `ability_profile.py`: compact ability summary profile.
-- `dkt.py`: DKT model and proficiency export support.
+- `dneuralcdm.py`: canonical Full knowledge-state and response predictor.
+- `dkt.py`: DKT predictive-reference support; not injected into Full.
 - `educational_multi_agent_prompt.py`: current multi-role prompt builders.
 - `four_tier.py`: four-tier parsing and external scoring helpers.
-- `learning_tool_state.py`: NCDM/IRT/memory tool-state encoder.
 - `evaluation.py`: response, distribution, and cognitive-consistency metrics.
 - `evaluation_views.py`: paper-oriented metric layers and result-table views.
 - `simulators/multi_role_simulator.py`: current multi-role simulator.

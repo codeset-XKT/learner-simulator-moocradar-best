@@ -168,7 +168,6 @@ if nn is not None:
             next_pro_guess = torch.sigmoid(self.pro_guess(next_problem))
             next_pro_divide = self.pro_divide(next_problem)
 
-            last_pro_rasch = F.embedding(last_problem, pro_embed)
             next_x = next_pro_rasch + self.ans_embed(next_ans.long())
 
             last_all_time = torch.ones((batch,), device=device, dtype=torch.long)

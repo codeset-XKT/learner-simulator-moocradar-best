@@ -11,7 +11,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from learner_simulator.data import clean_sequence, iter_sequence_rows  # noqa: E402
-from learner_simulator.dneuralcdm import DNeuralCDM, require_torch, torch  # noqa: E402
+from learner_simulator.dneuralcdm import (  # noqa: E402
+    dneuralcdm_model_from_checkpoint,
+    require_torch,
+    torch,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -36,12 +40,7 @@ def main() -> None:
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
     exercise_id_map = {str(k): int(v) for k, v in checkpoint["exercise_id_map"].items()}
     concept_id_map = {str(k): int(v) for k, v in checkpoint["concept_id_map"].items()}
-    model = DNeuralCDM(
-        checkpoint["num_exercises"],
-        checkpoint["num_know"],
-        int(checkpoint.get("embedding_dim", 128)),
-        int(checkpoint.get("hidden_dim", 128)),
-    )
+    model = dneuralcdm_model_from_checkpoint(checkpoint)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
 
