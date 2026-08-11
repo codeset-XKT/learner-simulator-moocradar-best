@@ -50,11 +50,12 @@ class LearnerState:
 
 
 class RandomLearnerSimulator:
-    """Random/statistical baseline simulator.
+    """Probability-sampling statistical baseline simulator.
 
-    This is the minimal non-LLM simulator. It estimates response probabilities
-    from user, item, concept, and dynamic mastery statistics, then samples a
-    Bernoulli response.
+    This is the minimal non-LLM simulator. It estimates ``p_correct`` from
+    user, item, concept, dynamic mastery, and optional external proficiency
+    statistics, then samples a Bernoulli response. The class name is retained
+    for command-line compatibility; it is not a uniform random 0.5 baseline.
     """
 
     def __init__(
@@ -73,6 +74,7 @@ class RandomLearnerSimulator:
         long_threshold: int = 3,
         behavior_control: bool = True,
         dneuralcdm_proficiency_path: str | None = None,
+        dneuralcdm_checkpoint_path: str | None = None,
         mikt_proficiency_path: str | None = None,
         dkt_proficiency_path: str | None = None,
     ) -> None:
@@ -86,6 +88,7 @@ class RandomLearnerSimulator:
         self.short_window = short_window
         self.long_threshold = long_threshold
         self.behavior_control = behavior_control
+        self.dneuralcdm_checkpoint_path = dneuralcdm_checkpoint_path
         self.dneuralcdm_proficiency = DNeuralCDMProficiency(dneuralcdm_proficiency_path)
         self.mikt_proficiency = MIKTProficiency(mikt_proficiency_path)
         self.dkt_proficiency = DKTProficiency(dkt_proficiency_path)
@@ -130,7 +133,6 @@ class RandomLearnerSimulator:
         self.profiles = build_learner_profiles(
             rows,
             questions,
-            ability_estimator=self.irt_model,
             normalization_rows=profile_normalization_rows,
         )
 
@@ -302,6 +304,7 @@ class RandomLearnerSimulator:
                     "qid": qid,
                     "cid": cid,
                     "kc_routes": qmeta.get("kc_routes", []),
+                    "question_type": qmeta.get("type"),
                     "content": qmeta.get("content"),
                     "content_preview": str(qmeta.get("content", ""))[:80],
                     "simulated_response": response,

@@ -10,6 +10,7 @@ __all__ = [
     "evaluation",
     "four_tier",
     "irt",
+    "irt_evidence",
     "llm",
     "memory",
     "profile",

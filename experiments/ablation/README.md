@@ -1,58 +1,78 @@
 # Ablation Experiments
 
-The ablation suite removes four central modules without changing learners, targets, sequence order, LLM configuration, or external answer scoring:
+The paper-facing ablation suite targets the current `multi-role` simulator. All
+variants must use the same cohort, target order, LLM configuration, feedback
+protocol, and external answer scorer.
 
-- `no-profile`: remove the static learner profile from the system prompt.
-- `no-memory`: remove short-term and long-term memory from the action prompt.
-- `no-proficiency`: remove current concept mastery from the action prompt.
-- `no-four-tier`: retain only `StudentAnswer`; remove reasoning and confidence elicitation.
-- `no-cognitive-selection`: remove the cognitive route/selection module.
-- `no-cognitive-profile`: remove the cognitive profile evidence.
-- `no-ability-profile`: remove the compact ability profile evidence.
+## Core Ablations
 
-Run selected variants on a fixed cohort:
+- `no-learner-state-profile`: remove the complete learner-state profile path,
+  including cognitive profile and ability profile.
+- `no-item-conditioned-integration`: retain raw NCDM and IRT evidence, but
+  remove their qualitative item-conditioned integration.
+- `no-four-tier`: retain the same evidence, reference answer, concept choice,
+  correctness decision, and submitted answer, while removing confidence and
+  reasoning tiers.
+- `no-dynamic-state-evolution`: freeze the state initialized from observed
+  history. It retains the same accepted feedback prefix and target-memory
+  updates as Full, but does not recompute the prompt-facing NCDM latent state.
+
+`no-dynamic-state-evolution` is not a teacher-forcing versus rollout comparison.
+The feedback mode must remain fixed across Full and this ablation; the ablation
+tests whether target-stage state evolution contributes useful information.
+
+## Supplementary Ablations
+
+- `no-ncdm`: remove NCDM state and prediction evidence while retaining
+  IRT and history-derived state.
+- `no-irt`: remove IRT ability-difficulty evidence while retaining NCDM.
+- `no-ncdm-irt`: remove both external measurement-model evidence paths.
+
+Removed historical aliases are intentionally unsupported so archived names
+cannot silently run a different experiment.
+
+## Run
 
 ```powershell
 python experiments/ablation/run_ablation.py `
-  --cohort-file experiments/cohorts/moocradar_90_10_10x10.json `
-  --variants full,no-cognitive-selection,no-cognitive-profile,no-ability-profile `
+  --simulator multi-role `
+  --dataset-root data/moocradar `
+  --cohort-file experiments/cohorts/moocradar_500x10_batches/moocradar_500x10_batch01_50x10_seed20260803.json `
+  --dneuralcdm-checkpoint outputs/dneuralcdm/moocradar_500plan_leakage_safe_v2_posdisc_masked_e30_d32_h64/best_model.pt `
+  --variants full,no-learner-state-profile,no-item-conditioned-integration,no-four-tier,no-dynamic-state-evolution `
   --parallel-variants 2 `
-  --progress `
-  --save-steps
+  --progress
 ```
 
-Save the exact cohort on the first run:
+Run the supplementary measurement-model ablations:
 
 ```powershell
-python experiments/ablation/run_ablation.py --source-rows 1000 --max-users 4 --save-cohort experiments/cohorts/ablation_4x10.json --progress
+python experiments/ablation/run_ablation.py `
+  --simulator multi-role `
+  --dataset-root data/moocradar `
+  --cohort-file experiments/cohorts/moocradar_500x10_batches/moocradar_500x10_batch01_50x10_seed20260803.json `
+  --dneuralcdm-checkpoint outputs/dneuralcdm/moocradar_500plan_leakage_safe_v2_posdisc_masked_e30_d32_h64/best_model.pt `
+  --variants full,no-ncdm,no-irt,no-ncdm-irt `
+  --parallel-variants 2 `
+  --progress
 ```
 
-Run independent variants concurrently while preserving sequential state updates
-inside each learner:
+Every completed variant immediately writes a checkpoint under
+`outputs/ablation/checkpoints/`. Reports contain all step traces, prompts, raw
+LLM responses, and structured intermediate states by default. Existing files
+are preserved; reruns create timestamped sibling files.
 
-```powershell
-python experiments/ablation/run_ablation.py --cohort-file experiments/cohorts/ablation_4x10.json --parallel-variants 5 --progress
-```
+Full uses one trained NCDM checkpoint as the canonical knowledge-state source.
+It computes the initial state from the observed history and recomputes that
+state after each accepted feedback response. Exported proficiency JSON, DKT,
+and MIKT artifacts are not injected into Full. The checkpoint must contain
+training metadata proving that every evaluated cohort UID was held out; retrain
+old checkpoints with the exact `--cohort-file` before running formal ablations.
 
-Reuse the first three learners from the locked cohort:
+Because LLM output is stochastic, formal experiments should use repeated runs
+and report mean plus standard deviation. A paired analysis should use the same
+target interactions across all variants.
 
-```powershell
-python experiments/ablation/run_ablation.py --cohort-file experiments/cohorts/ablation_4x10.json --cohort-user-limit 3 --variants full,no-four-tier --parallel-variants 2 --progress
-```
-
-Each completed variant is immediately saved under
-`outputs/ablation/checkpoints/`, so a long experiment does not lose completed
-conditions if a later API call is interrupted.
-
-Run a subset:
-
-```powershell
-python experiments/ablation/run_ablation.py --variants full,no-memory --source-rows 1000 --max-users 3 --progress
-```
-
-Because LLM output is stochastic, formal experiments should use multiple seeds or repeated runs and report mean plus standard deviation.
-
-Current note: the active research branch is named `multi-role` in comparison
-experiments, but the ablation runner still targets the older `full` branch.
-Check `README.md` and `RESULTS_SUMMARY.md` before interpreting ablation results
-as evidence for the current multi-role simulator.
+Run `python scripts/test_ablation_variants.py` after changing module wiring. The
+test checks that each ablated information path is absent from both prompts and
+recorded intermediate states.

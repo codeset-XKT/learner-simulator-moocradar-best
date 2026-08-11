@@ -1,47 +1,67 @@
 # Project Rules
 
-## Current Locked Baseline
+## Method Boundary
 
-- Current fixed baseline: `baseline-2026-07-04-foundationalassist-calibrated-v1`.
-- Read `VERSION_LOCK.md` before changing prompts, simulator decision logic, profile modules, or ablation wiring.
-- Treat this lock as the reproducible reference for the current prompt-calibrated Full simulator.
-- Historical MoocRadar good-result baseline:
-  `baseline-2026-07-04-moocradar-ability-summary-no-irt-v1`.
-- Read `VERSION_LOCK_MOOCRADAR.md` before comparing against the MoocRadar ability-summary result.
+- `multi-role` is the active paper method; `full` is the legacy
+  `LLMLearnerSimulator` baseline.
+- Multi-role Full uses one DNeuralCDM checkpoint for initial history-conditioned
+  state, current-item probability, and dynamic state evolution.
+- Never inject DKT, MIKT, exported NCDM proficiency JSON, random-baseline
+  `p_correct`, or sampled labels into multi-role Full.
+- The response remains the LLM's `LearnerCorrect` decision. Never override an
+  LLM disagreement with an NCDM/DKT threshold label.
+- The reference answer may be shown only for rendering `StudentAnswer` after
+  the correctness decision. Reference analysis and target labels stay hidden.
 
 ## Experiment Protocol
 
-- Use only the fixed Agent4Edu-style protocol.
-- Aggregate sequence rows by unique UID and sort interactions chronologically.
-- Use interactions 1-90 as observed history and interactions 91-100 as simulation targets.
-- Observed history must initialize Profile, IRT, mastery, short-term memory, and long-term memory.
-- Simulate all 10 target interactions sequentially. Do not add ratio-based, original-split, or variable-step experiment modes.
-- Random, probability, and LLM baselines must use exactly the same learners and target interactions.
+- Aggregate sequence rows by unique UID and sort chronologically.
+- Default formal protocol: interactions 1-90 are observed history and 91-100
+  are sequential simulation targets.
+- Use identical learners, targets, ordering, LLM configuration, feedback mode,
+  and scoring for every comparison and ablation.
+- Fit NCDM and profile-normalization statistics outside all cohort UIDs. Cohort
+  history is inference context, never training or normalization data.
+- Full must reject checkpoints without per-user holdout metadata. Train with
+  the exact fixed `--cohort-file`; do not grandfather old checkpoints.
+- `rollout` feeds simulated responses back; `teacher-forcing` feeds target
+  labels back only after scoring the current prediction.
+- Exclude an entire learner sequence from LLM aggregate metrics when any step
+  has an API or parse failure; preserve every raw step in the archived report.
 
-## LLM Contract
+## Official Ablations
 
-- The supported output contract is the four-tier response defined in `four_tier.py`.
-- The explicit `no-four-tier` ablation may use the answer-only contract; it must retain the same 90+10 data, state, and external-scoring pipeline.
-- The LLM generates StudentAnswer, AnswerConfidence, StudentReasoning, and ReasoningConfidence.
-- Correctness is determined externally from StudentAnswer and question metadata.
-- Do not restore Task4 self-evaluation or feed `p_correct`, sampled labels, reference answers, or reference analyses into the prompt.
-- The cognitive strategy controller may constrain available knowledge, method, reasoning budget, and verification. It must not prescribe a correct/incorrect label.
+- `no-learner-state-profile`
+- `no-item-conditioned-integration`
+- `no-four-tier`
+- `no-dynamic-state-evolution`
+- `no-ncdm`, `no-irt`, and `no-ncdm-irt`
+
+Do not restore historical aliases. `no-four-tier` removes only confidence and
+reasoning tiers; it retains the evidence, reference answer, concept decision,
+`LearnerCorrect`, submitted answer, and scoring path.
+
+## Evaluation
+
+- Report ACC, F1, Balanced Accuracy, Specificity, MCC, LDE, and CDE.
+- Report NCDM/DKT probability count and coverage whenever their direct
+  predictive metrics are shown.
+- Four-tier answer matching, confidence calibration, task consistency, and
+  mastery monotonicity are diagnostics, not replacements for response metrics.
+- The isolated Agent4Edu reproduction may expose answer metadata because its
+  official prompt does; reports must state this explicitly.
+
+## Locked References
+
+- `VERSION_LOCK_MOOCRADAR_FAIR_ABLATION.md`: active leakage-safe Full and
+  fair-ablation implementation over ten disjoint 50x10 cohorts.
+- `VERSION_LOCK.md`: FoundationalAssist historical calibrated baseline.
+- `VERSION_LOCK_MOOCRADAR.md`: MoocRadar historical ability-summary baseline.
+- `RESULTS_SUMMARY.md`: historical result ledger, not the active method spec.
 
 ## Verification
 
-```powershell
-python scripts/test_agent4edu_protocol.py
-python scripts/test_four_tier.py
-python scripts/test_experiment_scaffold.py
-python scripts/test_cognitive_strategy.py
-python scripts/evaluate.py --simulator random --source-rows 1000 --max-users 3
-```
-
-## Experiment Layout
-
-- Put model/baseline comparisons in `experiments/comparison/`.
-- Put module ablations in `experiments/ablation/`.
-- Every comparison and ablation must reuse the same selected UIDs and target interactions.
-- The isolated Agent4Edu reproduction may expose reference answers and analyses because the official action prompt does so. Reports must mark this leakage explicitly.
-- Do not import Agent4Edu's Task4 self-evaluation or answer leakage into the project's full simulator.
-- The Agent4Edu reproduction uses this project's dynamic mastery estimator in place of DNeuralCDM, as an explicit adapter.
+Run `scripts/test_ablation_variants.py`, `scripts/test_multi_role_simulator.py`,
+`scripts/test_profile_ablation_prompt.py`, `scripts/test_four_tier.py`,
+`scripts/test_evaluation_views.py`, `scripts/test_experiment_scaffold.py`, and
+`scripts/test_dneuralcdm_loader.py` after method or ablation changes.

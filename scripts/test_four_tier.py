@@ -11,6 +11,7 @@ from learner_simulator.four_tier import (  # noqa: E402
     compare_answers,
     parse_answer_only_response,
     parse_four_tier_response,
+    parse_reduced_response,
 )
 from learner_simulator.evaluation import evaluate_steps  # noqa: E402
 
@@ -47,6 +48,7 @@ ReasoningConfidence: 0.67"""
                 "four_tier_assessment": assessment,
                 "llm_parsed_action": {
                     **parsed,
+                    "learner_correct": 1,
                     "simulated_correct": 1,
                     "confidence": parsed["answer_confidence"],
                     "four_tier_assessment": assessment,
@@ -57,6 +59,8 @@ ReasoningConfidence: 0.67"""
     assert metrics["four_tier_response_count"] == 1
     assert metrics["four_tier_answer_scored_count"] == 1
     assert metrics["four_tier_fully_scored_count"] == 0
+    assert metrics["four_tier_decision_answer_consistency"] == 1.0
+    assert metrics["four_tier_decision_answer_consistency_count"] == 1
 
     answer_only = parse_answer_only_response("StudentAnswer: B")
     assert answer_only == {
@@ -79,6 +83,14 @@ ReasoningConfidence: 0.67"""
     assert answer_only_metrics["llm_response_acc"] == 1.0
     assert "llm_auc" not in answer_only_metrics
     assert "four_tier_response_count" not in answer_only_metrics
+
+    reduced = parse_reduced_response(
+        "Attempt: Yes\nIdentifiedConcept: decimal notation\n"
+        "LearnerCorrect: No\nStudentAnswer: B"
+    )
+    assert reduced is not None
+    assert reduced["learner_correct"] == 0
+    assert reduced["student_answer"] == "B"
     print("four_tier_test_ok")
 
 

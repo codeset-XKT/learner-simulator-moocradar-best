@@ -64,18 +64,19 @@ def main() -> None:
         cohort = load_json(cohort_path)
         cohort_history_rows = list(cohort["history_rows"])
 
+    cohort_uids = {str(row["uid"]) for row in cohort_history_rows}
     train_rows = [
         sequence_row_from_steps(
             uid,
             steps[: args.max_train_steps] if args.max_train_steps > 0 else steps,
         )
         for uid, steps in merge_steps_by_uid(source_rows).items()
-        if len(steps) >= 2
+        if len(steps) >= 2 and str(uid) not in cohort_uids
     ]
-    train_rows.extend(cohort_history_rows)
     print(
         f"Training DNeuralCDM with source_rows={args.source_rows}, "
-        f"train_sequences={len(train_rows)}, cohort_history_sequences={len(cohort_history_rows)}",
+        f"train_sequences={len(train_rows)}, excluded_cohort_users={len(cohort_uids)}, "
+        f"cohort_history_sequences={len(cohort_history_rows)}",
         flush=True,
     )
     checkpoint = train_dneuralcdm(
@@ -88,6 +89,12 @@ def main() -> None:
         hidden_dim=args.hidden_dim,
         seed=args.seed,
         log_every=args.log_every,
+        training_metadata={
+            "cohort_history_used_for_training": False,
+            "excluded_user_ids": sorted(cohort_uids),
+            "cohort_file": str(cohort_path) if cohort_path else None,
+            "training_user_count": len(train_rows),
+        },
     )
 
     export_rows = train_rows
@@ -103,6 +110,8 @@ def main() -> None:
         "proficiency": str(output_path),
         "train_users": len(train_rows),
         "export_users": len(export_rows),
+        "excluded_cohort_users": len(cohort_uids),
+        "cohort_history_used_for_training": False,
         "cohort_file": str(cohort_path) if cohort_path else None,
     }
     (output_dir / "summary.json").write_text(

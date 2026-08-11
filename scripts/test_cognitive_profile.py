@@ -10,7 +10,6 @@ sys.path.insert(0, str(ROOT / "src"))
 from learner_simulator.agent4edu_prompt import build_profile_system_prompt  # noqa: E402
 from learner_simulator.behavior import non_cognitive_factors  # noqa: E402
 from learner_simulator.cognitive_profile import build_cognitive_profile  # noqa: E402
-from learner_simulator.cognitive_strategy import select_cognitive_strategy  # noqa: E402
 from learner_simulator.profile import build_learner_profiles  # noqa: E402
 from learner_simulator.simulators.llm_simulator import _without_cognitive_profile  # noqa: E402
 
@@ -73,8 +72,6 @@ def main() -> None:
     assert "challenge adaptation" in prompt
     assert "profile confidence" in prompt
     assert "irt_ability" not in prompt
-    assert "behavioral proxies" in prompt
-    assert "fragile transfer" in prompt
     assert "generic agent-style demographic or activity profile" in prompt
     assert "During online study, you exhibit" not in prompt
     stripped_prompt = build_profile_system_prompt(_without_cognitive_profile(context))

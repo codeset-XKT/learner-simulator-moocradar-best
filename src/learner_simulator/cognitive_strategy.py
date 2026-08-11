@@ -51,20 +51,10 @@ def select_cognitive_strategy(
         overall_success = float(control_traits.get("overall_success_rate", raw_ability) or raw_ability)
         recent_success = float(control_traits.get("recent_success_rate", overall_success) or overall_success)
         mastery_stability = float(control_traits.get("mastery_stability", 0.5) or 0.5)
-        ability = min(
-            1.0,
-            max(
-                0.0,
-                (0.45 * overall_success)
-                + (0.35 * recent_success)
-                + (0.20 * mastery_stability),
-            ),
-        )
     else:
         overall_success = raw_ability
         recent_success = raw_ability
         mastery_stability = 0.5
-        ability = raw_ability
     concentration_proxy = float(affective_traits.get("concentration_proxy", 0.5) or 0.5)
     frustration_risk = float(affective_traits.get("frustration_risk", 0.0) or 0.0)
     confusion_risk = float(affective_traits.get("confusion_risk", 0.0) or 0.0)

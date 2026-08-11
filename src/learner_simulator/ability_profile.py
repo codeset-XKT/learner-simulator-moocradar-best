@@ -23,7 +23,6 @@ def build_ability_profile(
     questions = questions or {}
     history = list(sequence)
     global_stats = _global_stats(normalization_rows or [], questions)
-    concept_ids = [int(step["cid"]) for step in history]
     concept_stats = _concept_stats(history)
     distinct_concepts = len(concept_stats)
     coverage_ratio = (

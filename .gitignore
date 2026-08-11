@@ -1,12 +1,26 @@
+# Local credentials
 key.txt
 .env
+.env.*
+*.key
+
+# Python caches and local tooling
 __pycache__/
 *.py[cod]
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+
+# Editor and operating-system files
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local datasets, experiment archives, checkpoints, and publication mirrors
 data/
 outputs/
+variants/
+*_publish_*/
 *.pt
 *.pth
 *.ckpt
