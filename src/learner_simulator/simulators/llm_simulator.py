@@ -46,7 +46,6 @@ class LLMLearnerSimulator(RandomLearnerSimulator):
         include_memory: bool = True,
         include_proficiency: bool = True,
         include_behavior: bool = True,
-        include_cognitive_strategy: bool = True,
         include_cognitive_profile: bool = True,
         include_ability_profile: bool = True,
         feedback_mode: str = "rollout",
@@ -85,7 +84,6 @@ class LLMLearnerSimulator(RandomLearnerSimulator):
                 if include_memory
                 else {"short_memory": [], "long_memory": {}}
             )
-            cognitive_strategy = None
             true_concept = str(kc_routes[0]) if kc_routes else str(cid)
             concept_options = self.concept_options(
                 true_concept=true_concept,
@@ -111,7 +109,6 @@ class LLMLearnerSimulator(RandomLearnerSimulator):
                 ),
                 behavior_factors=behavior_factors if include_behavior else None,
                 response_format=response_format,
-                cognitive_strategy=cognitive_strategy,
                 tendency_calibration=tendency_calibration,
             )
 
@@ -150,7 +147,6 @@ class LLMLearnerSimulator(RandomLearnerSimulator):
                     "memory": include_memory,
                     "proficiency": include_proficiency,
                     "behavior": include_behavior,
-                    "cognitive_strategy": False,
                     "cognitive_profile": include_cognitive_profile,
                     "ability_profile": include_ability_profile and bool(profile_context.get("ability_profile")),
                     "four_tier": response_format == "four_tier",
@@ -233,78 +229,3 @@ def _without_ability_profile(profile_context: dict[str, Any]) -> dict[str, Any]:
     stripped = dict(profile_context)
     stripped.pop("ability_profile", None)
     return stripped
-
-
-def _build_tendency_calibration(
-    profile_context: dict[str, Any],
-    components: dict[str, Any],
-) -> dict[str, Any]:
-    cognitive_profile = profile_context.get("cognitive_profile") or {}
-    control = cognitive_profile.get("control_traits") or {}
-    history_rate = _optional_float(control.get("recent_success_rate"))
-    if history_rate is None:
-        history_rate = _optional_float(control.get("overall_success_rate"))
-    if history_rate is None:
-        history_rate = _optional_float(components.get("user_rate"))
-    mastery = _optional_float(components.get("mastery"))
-    concept_rate = _optional_float(components.get("concept_rate"))
-    item_rate = _optional_float(components.get("item_rate"))
-
-    evidence = [
-        (history_rate, 0.30),
-        (mastery, 0.35),
-        (concept_rate, 0.20),
-        (item_rate, 0.15),
-    ]
-    weighted_sum = sum(value * weight for value, weight in evidence if value is not None)
-    total_weight = sum(weight for value, weight in evidence if value is not None)
-    score = weighted_sum / total_weight if total_weight else 0.5
-    score = min(0.9, max(0.1, score))
-    return {
-        "score": round(score, 3),
-        "band": _tendency_band(score),
-        "history_rate": _round_optional(history_rate),
-        "history_level": _rate_level(history_rate),
-        "mastery": _round_optional(mastery),
-        "mastery_level": _rate_level(mastery),
-        "concept_rate": _round_optional(concept_rate),
-        "concept_level": _rate_level(concept_rate),
-        "item_rate": _round_optional(item_rate),
-    }
-
-
-def _optional_float(value: Any) -> float | None:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _round_optional(value: float | None) -> float | str:
-    return round(value, 3) if value is not None else "unavailable"
-
-
-def _rate_level(value: float | None) -> str:
-    if value is None:
-        return "unknown"
-    if value >= 0.72:
-        return "high"
-    if value >= 0.58:
-        return "favorable"
-    if value >= 0.42:
-        return "mixed"
-    if value >= 0.28:
-        return "fragile"
-    return "low"
-
-
-def _tendency_band(value: float) -> str:
-    if value >= 0.72:
-        return "strong-correct-leaning"
-    if value >= 0.58:
-        return "correct-leaning"
-    if value >= 0.42:
-        return "mixed"
-    if value >= 0.28:
-        return "error-leaning"
-    return "strong-error-leaning"

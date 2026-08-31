@@ -11,7 +11,7 @@ def build_profile_system_prompt(profile: dict[str, Any]) -> str:
         return (
             "You are simulating one specific high school student's first independent attempt on an online learning platform. "
             "The learner identity is defined by the stable learner profile below, not by generic demographics. "
-            "Use ordinary student-level reasoning constrained by this profile and by the item-conditioned evidence in the user prompt. "
+            "Use ordinary student-level reasoning constrained by this profile and by the evidence explicitly present in the user prompt. "
             "Current-item knowledge-state evidence should guide whether the learner is likely correct or incorrect.\n\n"
             "# Stable Learner Profile #\n"
             f"{stable_profile}"
@@ -61,7 +61,6 @@ def build_action_prompt(
     proficiency: dict[str, Any] | None,
     behavior_factors: dict[str, float] | None = None,
     response_format: str = "four_tier",
-    cognitive_strategy: dict[str, Any] | None = None,
     tendency_calibration: dict[str, Any] | None = None,
     include_profile_evidence: bool = True,
 ) -> str:
@@ -104,14 +103,16 @@ def build_action_prompt(
         f"# Textual Content #: {question.get('content', '')}\n\n"
         f"# Options #: {question.get('options', '')}\n"
     )
-    if response_format in {"four_tier", "reduced_response"} and question.get("answer") is not None:
+    reduced_response = response_format == "reduced_response"
+    four_tier_response = response_format == "four_tier"
+    if (reduced_response or four_tier_response) and question.get("answer") is not None:
         chunks.append(
             "# Reference Answer for Response Rendering #\n"
             f"{question.get('answer')}\n"
             "Use the reference answer only after deciding LearnerCorrect, so that a correct simulated learner can submit a well-formed answer. "
             "Do not use it as a reason to mark every learner correct."
         )
-    if response_format == "reduced_response":
+    if reduced_response:
         strategy_rule = (
             "3. Infer this learner's likely first-attempt behavior from the provided learner evidence, "
             "memories, non-cognitive state, and visible exercise.\n"
@@ -135,7 +136,6 @@ def build_action_prompt(
         )
         chunks.append(
             "Output exactly in this format:\n"
-            "Attempt: <Yes or No>\n"
             "IdentifiedConcept: <one concept from the provided options>\n"
             "LearnerCorrect: <Yes or No>\n"
             "StudentAnswer: <the option, value, or short response submitted by the learner>\n"
@@ -151,7 +151,7 @@ def build_action_prompt(
         )
         return "\n\n".join(chunks)
 
-    if response_format != "four_tier":
+    if not four_tier_response:
         raise ValueError(f"Unsupported response format: {response_format}")
 
     strategy_rule = (
@@ -192,16 +192,13 @@ def build_action_prompt(
         f"{error_rule}"
         "7. StudentReasoning must be a concise learner scratch trace, not a teacher-style full explanation. "
         "It may include enough recall, formula use, or checking to produce a complete submitted answer when readiness is strong.\n"
-        "8. Confidence is from the learner's perspective, not objective correctness. Use these numeric anchors: high=0.80, medium=0.50, low=0.20. "
+        "8. Confidence is from the learner's perspective, not objective correctness. Use the original three numeric anchors: high=0.80, medium=0.50, low=0.20. "
         "High confidence can still be wrong under misconception; low confidence can still be correct under guessing. "
         "For careless states, do not recheck even when confidence is medium/high.\n"
         f"{evidence_tendency_rule}"
         "10. LearnerCorrect is the response-simulation decision: whether this learner would answer the item correctly. "
         f"Make this decision from {task4_evidence} before rendering StudentAnswer. "
         "StudentAnswer is a behavioral record generated after that decision."
-    )
-    chunks.append(
-        "First decide whether the learner attempts the problem. Regardless of this choice, still simulate the answer that the learner would submit."
     )
     chunks.append("Choose one knowledge concept tested by this exercise from the following three options:")
     chunks.extend([f"- {concept}" for concept in concept_options])
@@ -214,14 +211,13 @@ def build_action_prompt(
     )
     chunks.append(
         "Output exactly in this format:\n"
-        "Attempt: <Yes or No>\n"
         "IdentifiedConcept: <one concept from the provided options>\n"
         "LearnerCorrect: <Yes or No>\n"
         "StudentAnswer: <the learner's submitted answer only>\n"
         "AnswerConfidence: <0.80 for high, 0.50 for medium, or 0.20 for low>\n"
         "StudentReasoning: <one short learner scratch step, which may be incomplete or mistaken>\n"
         "ReasoningConfidence: <0.80 for high, 0.50 for medium, or 0.20 for low>\n"
-        "Return only these seven fields. Do not output the private commitment, correction, or markdown formatting."
+        "Return only these six fields. Do not output the private commitment, correction, or markdown formatting."
     )
     return "\n\n".join(chunks)
 

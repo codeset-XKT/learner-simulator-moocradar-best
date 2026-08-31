@@ -95,6 +95,7 @@ def train_dkt(
     dropout: float = 0.2,
     seed: int = 42,
     log_every: int = 20,
+    training_metadata: dict[str, Any] | None = None,
 ) -> Path:
     require_torch()
     torch.manual_seed(seed)
@@ -173,6 +174,7 @@ def train_dkt(
             "concept_id_map": dataset.concept_id_map,
             "best_val_acc": best_val_acc,
             "best_val_auc": best_val_auc,
+            "training_metadata": training_metadata or {},
         },
         checkpoint_path,
     )

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from learner_simulator.agent4edu_prompt import build_action_prompt
 from learner_simulator.irt_evidence import prompt_irt_evidence
 
 
@@ -37,122 +36,130 @@ def build_response_prompt(
     question: dict[str, Any],
     short_memory: list[dict[str, Any]],
     long_memory: dict[str, Any],
-    concept_options: list[str],
+    concept_options: list[str] | None,
     proficiency: dict[str, Any] | None = None,
-    historical_reflection: dict[str, Any] | None = None,
-    item_conditioned_ability: dict[str, Any] | None = None,
     irt_evidence: dict[str, Any] | None = None,
     response_format: str = "four_tier",
     include_profile_evidence: bool = True,
-    include_item_conditioned_evidence: bool = True,
-    include_historical_reflection: bool = True,
     include_irt_evidence: bool = True,
     include_ncdm_evidence: bool = True,
+    evidence_repository: dict[str, Any] | None = None,
+    state_item_alignment: dict[str, Any] | None = None,
+    include_evidence_representation: bool = True,
+    include_state_item_alignment: bool = True,
 ) -> str:
-    if response_format not in {"four_tier", "reduced_response", "answer_only"}:
+    if response_format not in {
+        "four_tier",
+        "reduced_response",
+        "answer_only",
+    }:
         raise ValueError(f"Unsupported response format: {response_format}")
 
-    reflection = historical_reflection or {}
-    item_evidence = _prompt_item_conditioned_evidence(
-        item_conditioned_ability or {},
-        include_profile_evidence=include_profile_evidence,
-    )
     chunks = [
         "# Response Agent #",
         "Simulate this learner's single first attempt from the evidence below.",
     ]
-    if include_ncdm_evidence and proficiency:
+    # Strict V5 information bottleneck: Module 3 receives only the canonical
+    # output of Module 2, never parallel raw NCDM, IRT, or history sections.
+    if state_item_alignment:
         chunks.extend(
             [
                 "",
-                "# NCDM State Evidence #",
-                _compact(_prompt_ncdm_evidence(proficiency)),
-                (
-                    "Concept mastery is knowledge-state evidence, not a sampled "
-                    "answer label or a current-item correctness probability."
-                ),
-            ]
-        )
-    elif proficiency:
-        chunks.extend(
-            [
-                "",
-                "# History-based Knowledge Evidence #",
-                _compact(_prompt_history_state(proficiency)),
-            ]
-        )
-    if include_historical_reflection:
-        chunks.extend(
-            [
-                "",
-                "# Observed-History Replay Calibration #",
-                _compact(_prompt_reflection(reflection)),
-            ]
-        )
-    if include_irt_evidence:
-        chunks.extend(
-            [
-                "",
-                "# IRT Ability-Difficulty Evidence #",
-                _compact(prompt_irt_evidence(irt_evidence)),
-            ]
-        )
-    if include_item_conditioned_evidence:
-        chunks.extend(
-            [
-                "",
-                "# Item-conditioned Integration #",
-                _compact(item_evidence),
+                "# Cognitive State-Item Alignment #",
+                _compact(state_item_alignment),
             ]
         )
 
     constraints = [
-        "- Use only evidence sections that are present; never reconstruct an ablated module.",
-        "- Missing related memory is unobserved evidence, not evidence of inability.",
-        "- Generate one plausible first attempt; do not deliberately insert an error.",
+        "- Use only the canonical Module 2 output; never reconstruct an ablated upstream module.",
+        "- Missing learner evidence is unobserved evidence, not evidence of inability.",
+        "- Simulate one plausible first attempt without optimizing for either correctness or incorrectness.",
     ]
     if response_format in {"four_tier", "reduced_response"}:
         constraints.insert(
             2,
-            "- Decide LearnerCorrect before using the reference answer to render StudentAnswer.",
+            "- Decide LearnerCorrect from the learner evidence first. Then use the reference answer only to render a StudentAnswer consistent with that decision: Yes must submit the reference answer; No must submit a different option or answer.",
         )
-    if include_ncdm_evidence:
+    if response_format == "four_tier":
+        constraints.extend(
+            [
+                "- Cite only evidence IDs listed in selected_evidence_ids; never invent an ID.",
+                "- IdentifiedConcept must be decided before LearnerCorrect.",
+                "- Strong aligned readiness should normally lean correct; weak readiness should normally lean incorrect.",
+                "- Repeated relevant errors keep a mistake plausible; repeated successes support a correct attempt without fixing the label.",
+                "- Resolve boundary evidence using aligned mastery, selected events, recent performance, learner ability, and item difficulty together.",
+                "- Commit to LearnerCorrect once, then render StudentAnswer, reasoning, and confidence consistently with that decision.",
+            ]
+        )
+    if response_format == "four_tier" and include_ncdm_evidence:
         constraints.append(
             "- Treat NCDM concept mastery as the primary knowledge-state evidence, while allowing concrete memory and item demand to resolve boundary cases."
         )
-    if include_irt_evidence:
+    if response_format == "four_tier" and include_irt_evidence:
         constraints.append(
             "- IRT calibrates relative challenge and confidence; it does not directly determine correctness."
         )
-    if include_historical_reflection:
-        constraints.append(
-            "- Replay calibration uses observed history only and must never be updated from target labels inside response generation."
-        )
-    if include_item_conditioned_evidence:
-        constraints.append(
-            (
-                "- Item-conditioned integration adjusts reasoning depth and confidence without duplicating or replacing NCDM evidence."
-                if include_ncdm_evidence
-                else "- Item-conditioned integration adjusts reasoning depth and confidence without inventing unavailable model evidence."
-            )
-        )
     chunks.extend(["", "# Decision Constraints #", *constraints, ""])
 
-    # Memory, item content, reference answer, concept options, and the output
-    # contract are rendered once by the shared action prompt.
-    base = build_action_prompt(
-        question=question,
-        short_memory=short_memory,
-        long_memory=long_memory,
-        concept_options=concept_options,
-        proficiency=None,
-        behavior_factors=None,
-        response_format=response_format,
-        cognitive_strategy=None,
-        tendency_calibration=None,
-        include_profile_evidence=include_profile_evidence,
+    chunks.extend(
+        [
+            "",
+            "# Current Exercise #",
+            f"TextualContent: {question.get('content', '')}",
+            f"Options: {question.get('options', '')}",
+            *([f"ConceptOptions: {concept_options}"] if concept_options else []),
+            "",
+            "# Reference Answer for Response Rendering #",
+            f"ReferenceAnswer: {question.get('answer', '')}",
+        ]
     )
-    return "\n".join(chunks) + base
+    chunks.extend(["", _response_contract(response_format, concept_options=concept_options)])
+    return "\n".join(chunks)
+
+
+def _response_contract(
+    response_format: str,
+    *,
+    concept_options: list[str] | None = None,
+) -> str:
+    concept_field = (
+        "IdentifiedConcept: <one supplied concept option>\n"
+        if concept_options
+        else "IdentifiedConcept: <brief concept inferred from item text, or unknown>\n"
+    )
+    if response_format == "four_tier":
+        return (
+            "# Structured Response Process Contract #\n"
+            "Return exactly these seven fields in order. Use discrete confidence "
+            "anchors 0.20, 0.50, or 0.80.\n"
+            "The field headers below are literal machine keys: keep their English "
+            "spelling and ASCII colon exactly; do not translate or rename them.\n"
+            "EvidenceRefs: <comma-separated selected evidence IDs, or none>\n"
+            + concept_field
+            + "LearnerCorrect: <Yes or No>\n"
+            "StudentAnswer: <the learner's submitted option or short answer>\n"
+            "AnswerConfidence: <0.20, 0.50, or 0.80>\n"
+            "StudentReasoning: <brief observable student-level rationale>\n"
+            "ReasoningConfidence: <0.20, 0.50, or 0.80>\n"
+            "Do not output Attempt, hidden chain-of-thought, markdown, or extra fields."
+        )
+    if response_format == "reduced_response":
+        return (
+            "# Direct Response Generation Contract #\n"
+            "Return exactly:\n"
+            "The field headers below are literal machine keys: keep their English "
+            "spelling and ASCII colon exactly; do not translate or rename them.\n"
+            + concept_field
+            + "LearnerCorrect: <Yes or No>\n"
+            "StudentAnswer: <the learner's submitted option or short answer>\n"
+            "Do not output process fields, confidence, reasoning, or markdown."
+        )
+    if response_format == "answer_only":
+        return (
+            "# Answer-only Contract #\n"
+            "StudentAnswer: <the learner's submitted option or short answer>"
+        )
+    raise ValueError(f"Unsupported response format: {response_format}")
 
 
 def _prompt_ncdm_evidence(proficiency: dict[str, Any]) -> dict[str, Any]:
@@ -174,58 +181,19 @@ def _prompt_history_state(proficiency: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _prompt_reflection(reflection: dict[str, Any]) -> dict[str, Any]:
-    policy = reflection.get("adaptive_policy") or {}
-    return {
-        "available": reflection.get("available"),
-        "calibration_window": reflection.get("calibration_window"),
-        "actual_correct_rate": reflection.get("actual_correct_rate"),
-        "predicted_correct_rate": reflection.get("predicted_correct_rate"),
-        "bias_direction": reflection.get("bias_direction"),
-        "error_pattern": reflection.get("error_pattern"),
-        "evidence_confidence": reflection.get("evidence_confidence"),
-        "state_model_trust": policy.get("state_model_trust"),
-        "response_bias": policy.get("response_bias"),
-        "instruction": policy.get("instruction"),
-    }
-
-
-def _prompt_item_conditioned_evidence(
-    item_conditioned_ability: dict[str, Any],
-    include_profile_evidence: bool,
-) -> dict[str, Any]:
-    evidence = item_conditioned_ability.get("evidence") or {}
-    result = {
-        "module": item_conditioned_ability.get("module"),
-        "knowledge_alignment": item_conditioned_ability.get("knowledge_alignment"),
-        "practice_alignment": item_conditioned_ability.get("practice_alignment"),
-        "demand_alignment": item_conditioned_ability.get("demand_alignment"),
-        "memory_support": item_conditioned_ability.get("memory_support"),
-        "ability_activation": item_conditioned_ability.get("ability_activation"),
-        "item_demand": evidence.get("item_demand"),
-        "related_memory_count": evidence.get("related_memory_count"),
-        "related_memory_outcome": evidence.get("related_memory_outcome"),
-        "response_guidance": item_conditioned_ability.get("response_guidance"),
-    }
-    if include_profile_evidence:
-        result["profile_support"] = {
-            "knowledge_breadth": evidence.get("knowledge_breadth"),
-            "challenge_adaptation": evidence.get("challenge_adaptation"),
-            "mastery_stability": evidence.get("mastery_stability"),
-        }
-    return result
-
-
 def build_four_tier_response_record(
     action: dict[str, Any],
     four_tier: dict[str, Any],
-    item_conditioned_ability: dict[str, Any] | None = None,
     irt_evidence: dict[str, Any] | None = None,
+    state_item_alignment: dict[str, Any] | None = None,
+    process_consistency: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
-        "module": "four_tier_response",
+        # Attempt remains removed; confidence uses the original three anchors.
+        "module": "structured_response_generation",
+        "response_contract": "single_pass_process_verifiable_v6_label_conditioned_answer_realization",
         "generation": {
-            "attempt": action.get("attempt"),
+            "evidence_refs": action.get("evidence_refs", []),
             "identified_concept": action.get("identified_concept"),
             "learner_correct": action.get("learner_correct"),
             "response_decision_source": action.get("response_decision_source"),
@@ -244,25 +212,10 @@ def build_four_tier_response_record(
             "scoring_note": four_tier.get("scoring_note"),
         },
         "conditioning": {
-            "item_conditioned_integration": {
-                "ability_activation": (item_conditioned_ability or {}).get(
-                    "ability_activation"
-                ),
-                "knowledge_alignment": (item_conditioned_ability or {}).get(
-                    "knowledge_alignment"
-                ),
-                "practice_alignment": (item_conditioned_ability or {}).get(
-                    "practice_alignment"
-                ),
-                "demand_alignment": (item_conditioned_ability or {}).get(
-                    "demand_alignment"
-                ),
-                "memory_support": (item_conditioned_ability or {}).get(
-                    "memory_support"
-                ),
-            },
             "irt_ability_difficulty_evidence": prompt_irt_evidence(irt_evidence),
+            "cognitive_state_item_alignment": state_item_alignment,
         },
+        "process_consistency": process_consistency,
     }
 
 

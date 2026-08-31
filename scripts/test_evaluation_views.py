@@ -12,6 +12,11 @@ from learner_simulator.evaluation_views import (  # noqa: E402
     extract_named_reports,
     layered_metric_view,
 )
+from learner_simulator.evaluation import (  # noqa: E402
+    extract_simulation_task_diagnostics,
+    response_sequence_rouge_n,
+    simulation_task_metrics,
+)
 from experiments.evaluation.summarize_results import build_markdown_table  # noqa: E402
 
 
@@ -86,6 +91,43 @@ def main() -> None:
     assert layered["distribution_consistency"]["learner_distribution_error"] == 0.5
     assert layered["task_consistency"]["task3_response_acc"] == 0.5
     assert layered["diagnostic_consistency"]["four_tier_answer_confidence_ece"] == 0.2
+
+    rouge = response_sequence_rouge_n([
+        {"uid": "u1", "step_index": i, "real_response": real, "simulated_response": simulated}
+        for i, (real, simulated) in enumerate(zip(
+            [1, 1, 0, 1, 0],
+            [1, 1, 0, 0, 0],
+        ))
+    ])
+    assert rouge == {"precision": 1 / 3, "recall": 1 / 3, "f1": 1 / 3, "user_count": 1}
+
+    v4_task_metrics = simulation_task_metrics(
+        extract_simulation_task_diagnostics(
+            [{
+                "real_response": 1,
+                "simulation_tasks": {
+                    "task1_learner_state_profile": {"ablated": False},
+                    "task2_contextual_evidence_and_memory": {
+                        "selected_concept": "addition",
+                        "true_concept": "addition",
+                        "concept_match": True,
+                    },
+                    "task3_structured_learner_process_response": {
+                        
+                        "learner_correct": 1,
+                        "answer_correct": True,
+                        "answer_confidence": 0.8,
+                    },
+                    "task4_dynamic_state_evolution": {
+                        "feedback_mode": "teacher-forcing",
+                        "mastery_delta": 0.1,
+                    },
+                },
+            }]
+        )
+    )
+    assert v4_task_metrics["task2_concept_accuracy"] == 1.0
+    assert v4_task_metrics["task3_response_acc"] == 1.0
 
     markdown = build_markdown_table(rows)
     assert "Balanced Acc" in markdown

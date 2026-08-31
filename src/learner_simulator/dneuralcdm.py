@@ -332,10 +332,9 @@ class DNeuralCDMSequenceDataset:
         self.num_know = len(self.concept_id_map)
         self.samples = []
         for row in rows:
-            sequence = []
+            concept_ids = []
             labels = []
-            masks = []
-            exercise_vectors = []
+            exercise_ids = []
             user_ids = []
             for step in clean_sequence(row):
                 qid = self.exercise_id_map.get(str(step["qid"]))
@@ -343,28 +342,26 @@ class DNeuralCDMSequenceDataset:
                 if qid is None or cid is None:
                     continue
                 response = int(step["response"])
-                encoded = [0.0] * (2 * self.num_know)
-                mask = [0.0] * self.num_know
-                exercise_vec = [0.0] * self.num_exercises
-                encoded[(2 * cid) + (0 if response == 1 else 1)] = 1.0
-                mask[cid] = 1.0
-                exercise_vec[qid] = 1.0
-                sequence.append(encoded)
+                concept_ids.append(cid)
                 labels.append(float(response))
-                masks.append(mask)
-                exercise_vectors.append(exercise_vec)
+                exercise_ids.append(qid)
                 user_ids.append(str(row["uid"]))
-            if len(sequence) >= 2:
-                self.samples.append((sequence, masks, exercise_vectors, labels, user_ids))
+            if len(concept_ids) >= 2:
+                # Keep only integer indices in memory. The previous implementation
+                # materialized three dense one-hot vectors for every interaction,
+                # consuming tens of GB on full FoundationAssist. Dense tensors are
+                # now constructed only for the current mini-batch in _collate_fn.
+                self.samples.append((concept_ids, exercise_ids, labels, user_ids))
 
     def split_by_student(self, train_ratio: float = 0.8, val_ratio: float = 0.2):
         train_data, val_data, all_data = [], [], []
-        for seq, mask, exe, labels, uids in self.samples:
-            split1 = max(2, int(len(seq) * train_ratio))
+        for concepts, exercises, labels, uids in self.samples:
+            split1 = max(2, int(len(concepts) * train_ratio))
             split2 = max(2, int(split1 * (1.0 - val_ratio)))
-            train_data.append((seq[:split2], mask[:split2], exe[:split2], labels[:split2], uids[:split2]))
-            val_data.append((seq[split2:split1], mask[split2:split1], exe[split2:split1], labels[split2:split1], uids[split2:split1]))
-            all_data.append((seq, mask, exe, labels, uids))
+            dimensions = (self.num_know, self.num_exercises)
+            train_data.append((concepts[:split2], exercises[:split2], labels[:split2], uids[:split2], *dimensions))
+            val_data.append((concepts[split2:split1], exercises[split2:split1], labels[split2:split1], uids[split2:split1], *dimensions))
+            all_data.append((concepts, exercises, labels, uids, *dimensions))
         return train_data, val_data, all_data
 
 
@@ -545,20 +542,27 @@ def dneuralcdm_model_from_checkpoint(checkpoint):
 
 
 def _collate_fn(batch):
-    sequences, masks, exercise_ids, labels, user_ids = zip(*batch)
-    max_length = max(len(seq) for seq in sequences)
-    padded_sequences = torch.zeros(len(batch), max_length, len(sequences[0][0]), dtype=torch.float32)
-    padded_masks = torch.zeros(len(batch), max_length, len(masks[0][0]), dtype=torch.float32)
-    padded_exercise_ids = torch.zeros(len(batch), max_length, len(exercise_ids[0][0]), dtype=torch.float32)
+    concept_ids, exercise_ids, labels, user_ids, num_knows, num_exercises = zip(*batch)
+    num_know = int(num_knows[0])
+    num_exercise = int(num_exercises[0])
+    max_length = max(len(seq) for seq in concept_ids)
+    padded_sequences = torch.zeros(len(batch), max_length, 2 * num_know, dtype=torch.float32)
+    padded_masks = torch.zeros(len(batch), max_length, num_know, dtype=torch.float32)
+    padded_exercise_ids = torch.zeros(len(batch), max_length, num_exercise, dtype=torch.float32)
     padded_labels = torch.zeros(len(batch), max_length, dtype=torch.float32)
     padded_user_ids: list[list[str]] = []
     lengths = torch.zeros(len(batch), dtype=torch.long)
-    for index, (seq, mask, exe, label, uid) in enumerate(zip(sequences, masks, exercise_ids, labels, user_ids)):
-        length = len(seq)
+    for index, (concepts, exercises, label, uid) in enumerate(zip(concept_ids, exercise_ids, labels, user_ids)):
+        length = len(concepts)
         lengths[index] = length
-        padded_sequences[index, :length] = torch.tensor(seq, dtype=torch.float32)
-        padded_masks[index, :length] = torch.tensor(mask, dtype=torch.float32)
-        padded_exercise_ids[index, :length] = torch.tensor(exe, dtype=torch.float32)
+        positions = torch.arange(length)
+        concept_tensor = torch.tensor(concepts, dtype=torch.long)
+        exercise_tensor = torch.tensor(exercises, dtype=torch.long)
+        response_tensor = torch.tensor(label, dtype=torch.long)
+        response_offsets = torch.where(response_tensor == 1, 0, 1)
+        padded_sequences[index, positions, (2 * concept_tensor) + response_offsets] = 1.0
+        padded_masks[index, positions, concept_tensor] = 1.0
+        padded_exercise_ids[index, positions, exercise_tensor] = 1.0
         padded_labels[index, :length] = torch.tensor(label, dtype=torch.float32)
         padded_user_ids.append(list(uid))
     return padded_sequences, padded_masks, padded_exercise_ids, padded_labels, padded_user_ids, lengths

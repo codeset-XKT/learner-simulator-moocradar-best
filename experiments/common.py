@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
+import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -26,6 +29,7 @@ from learner_simulator.data import (  # noqa: E402
 from learner_simulator.evaluation import evaluate_steps, flatten_simulations  # noqa: E402
 from learner_simulator.evaluation_views import layered_metric_view  # noqa: E402
 from learner_simulator.llm import load_json  # noqa: E402
+from learner_simulator.process_verification import verify_process_steps  # noqa: E402
 from learner_simulator.simulators import (  # noqa: E402
     Agent4EduBaselineSimulator,
     LLMLearnerSimulator,
@@ -108,6 +112,16 @@ def add_shared_arguments(parser: argparse.ArgumentParser) -> None:
         help="Save only sample steps. Intended only for short local debugging runs.",
     )
     parser.add_argument("--progress", action="store_true")
+    parser.add_argument(
+        "--parallel-learners",
+        type=int,
+        default=1,
+        help=(
+            "Number of learner sequences to simulate concurrently inside each "
+            "variant. Supported by multi-role and Agent4Edu; steps within one learner "
+            "remain sequential. Agent4Edu makes an action and a reflection call per step."
+        ),
+    )
     parser.add_argument("--output", default=None)
     parser.add_argument(
         "--cohort-file",
@@ -154,7 +168,9 @@ def load_fixed_cohort(args: argparse.Namespace) -> tuple[
     if args.cohort_file:
         cohort_path = resolve_project_path(args.cohort_file)
         cohort = load_json(cohort_path)
-        dataset_root = Path(cohort.get("dataset_root") or dataset_root)
+        stored_dataset_root = cohort.get("dataset_root")
+        if not dataset_root.exists() and stored_dataset_root:
+            dataset_root = Path(stored_dataset_root)
         questions = load_questions(dataset_root / "metadata" / "questions.json")
         history_rows = list(cohort["history_rows"])
         target_rows = list(cohort["target_rows"])
@@ -351,19 +367,25 @@ def run_experiment(
     ]
     total_steps = sum(len(clean_sequence(row)) for row in simulation_target_rows)
     progress = make_progress(progress_name or name, total_steps, enabled=args.progress)
-    simulations: list[dict[str, Any]] = []
+    learner_workers = int(getattr(args, "parallel_learners", 1))
+    if learner_workers <= 0:
+        raise ValueError("--parallel-learners must be positive")
+    if learner_workers > 1 and name not in {"multi-role", "agent4edu"}:
+        raise ValueError(
+            "--parallel-learners > 1 is supported only by multi-role and agent4edu"
+        )
     started = time.perf_counter()
 
-    for row in simulation_target_rows:
+    def simulate_row(row: dict[str, str]) -> dict[str, Any]:
         history_row = history_by_uid[row["uid"]]
         if name == "random":
-            simulation = simulator.simulate_sequence(
+            return simulator.simulate_sequence(
                 row,
                 questions=questions,
                 history_row=history_row,
             )
         elif name == "agent4edu":
-            simulation = simulator.simulate_sequence(
+            return simulator.simulate_sequence(
                 row,
                 questions=questions,
                 llm_config=llm_config,
@@ -375,10 +397,6 @@ def run_experiment(
         else:
             extra_module_kwargs = {}
             if name == "multi-role":
-                extra_module_kwargs["include_item_conditioned_ability"] = modules.get(
-                    "item_conditioned_ability",
-                    True,
-                )
                 extra_module_kwargs["include_ncdm_evidence"] = modules.get(
                     "ncdm_evidence",
                     True,
@@ -387,7 +405,19 @@ def run_experiment(
                     "dynamic_state_evolution",
                     True,
                 )
-            simulation = simulator.simulate_sequence(
+                extra_module_kwargs["include_irt_evidence"] = modules.get(
+                    "irt_evidence",
+                    True,
+                )
+                extra_module_kwargs["include_evidence_representation"] = modules.get(
+                    "evidence_representation",
+                    True,
+                )
+                extra_module_kwargs["include_state_item_alignment"] = modules.get(
+                    "state_item_alignment",
+                    True,
+                )
+            return simulator.simulate_sequence(
                 row,
                 questions=questions,
                 llm_config=llm_config,
@@ -397,22 +427,23 @@ def run_experiment(
                 history_row=history_row,
                 response_format=(
                     "four_tier"
-                    if modules.get("four_tier", True)
+                    if modules.get("structured_response", True)
                     else "reduced_response"
                 ),
                 include_profile=modules.get("profile", True),
                 include_memory=modules.get("memory", True),
                 include_cognitive_profile=modules.get("cognitive_profile", True),
                 include_ability_profile=modules.get("ability_profile", True),
-                include_irt_evidence=modules.get("irt_evidence", True),
-                include_historical_reflection=modules.get(
-                    "historical_reflection",
-                    True,
-                ),
                 feedback_mode=args.feedback_mode,
                 **extra_module_kwargs,
             )
-        simulations.append(simulation)
+    if learner_workers == 1:
+        simulations = [simulate_row(row) for row in simulation_target_rows]
+    else:
+        # executor.map preserves cohort order while each learner's internal
+        # target steps remain strictly sequential inside simulate_sequence.
+        with ThreadPoolExecutor(max_workers=learner_workers) as executor:
+            simulations = list(executor.map(simulate_row, simulation_target_rows))
 
     elapsed = time.perf_counter() - started
     steps = flatten_simulations(simulations)
@@ -425,7 +456,9 @@ def run_experiment(
             "grouping_unit": "unique_uid",
             "history_steps": args.history_steps,
             "target_steps": args.target_steps,
-            "feedback_mode": args.feedback_mode,
+            "feedback_mode": (
+                "official_observed_outcome" if name == "agent4edu" else args.feedback_mode
+            ),
         },
         "modules": modules,
         "unique_simulated_users": len(simulation_target_rows),
@@ -443,6 +476,7 @@ def run_experiment(
             "policy": "exclude_entire_learner_sequence_after_any_llm_failure",
         },
         "sample_steps": steps[:20],
+        "process_verification": verify_process_steps(metric_steps),
     }
     report["metric_layers"] = layered_metric_view(
         {
@@ -461,8 +495,10 @@ def run_experiment(
             "post_response_reflection": modules.get("reflection", True),
             "reference_answer_exposed": True,
             "reference_analysis_exposed": True,
-            "proficiency_adapter": "project_dynamic_mastery",
-            "rollout_feedback": "simulated_response",
+            "proficiency_adapter": "dneuralcdm_checkpoint_current_concept_state",
+            "irt_profile_adapter": "history_fitted_rasch1pl_ability",
+            "feedback_mode": "official_observed_outcome",
+            "parallel_learners": learner_workers,
         }
     if args.save_steps:
         report["all_steps"] = steps
@@ -524,7 +560,8 @@ def build_archive_metadata(
     """Describe everything needed to audit a saved run without storing secrets."""
 
     return {
-        "schema_version": "experiment-trace-v1",
+        "schema_version": "experiment-trace-v2",
+        "implementation_fingerprint": current_implementation_fingerprint(),
         "run_id": args.experiment_run_id,
         "started_at_utc": args.experiment_started_at_utc,
         "report_created_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -536,6 +573,33 @@ def build_archive_metadata(
             "prompts_saved": bool(args.include_prompt),
             "existing_files_overwritten": False,
         },
+    }
+
+
+def current_implementation_fingerprint() -> dict[str, Any]:
+    """Fingerprint response semantics so repairs cannot mix code revisions."""
+    paths: list[Path] = []
+    paths.extend(sorted((ROOT / "src").rglob("*.py")))
+    paths.extend([
+        ROOT / "experiments" / "common.py",
+        ROOT / "experiments" / "ablation" / "run_ablation.py",
+        ROOT / "scripts" / "repair_failed_steps.py",
+    ])
+    digest = hashlib.sha256()
+    included: list[str] = []
+    for path in paths:
+        if not path.exists() or "__pycache__" in path.parts:
+            continue
+        relative = str(path.relative_to(ROOT))
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+        included.append(relative)
+    return {
+        "algorithm": "sha256",
+        "digest": digest.hexdigest(),
+        "files": included,
     }
 
 
@@ -676,22 +740,24 @@ def valid_metric_steps(
 
 def make_progress(name: str, total: int, enabled: bool):
     state = {"done": 0, "started": time.perf_counter()}
+    lock = threading.Lock()
 
     def callback(step: dict[str, Any]) -> None:
-        state["done"] += 1
-        if not enabled:
-            return
-        elapsed = time.perf_counter() - state["started"]
-        avg = elapsed / state["done"]
-        eta = avg * max(0, total - state["done"])
-        status = "error" if step.get("llm_error") else "ok"
-        print(
-            f"[{name} {state['done']}/{total}] status={status} "
-            f"uid={step.get('uid')} qid={step.get('qid')} "
-            f"call={float(step.get('llm_elapsed_seconds', 0.0)):.2f}s "
-            f"elapsed={format_duration(elapsed)} eta={format_duration(eta)}",
-            flush=True,
-        )
+        with lock:
+            state["done"] += 1
+            if not enabled:
+                return
+            elapsed = time.perf_counter() - state["started"]
+            avg = elapsed / state["done"]
+            eta = avg * max(0, total - state["done"])
+            status = "error" if step.get("llm_error") else "ok"
+            print(
+                f"[{name} {state['done']}/{total}] status={status} "
+                f"uid={step.get('uid')} qid={step.get('qid')} "
+                f"call={float(step.get('llm_elapsed_seconds', 0.0)):.2f}s "
+                f"elapsed={format_duration(elapsed)} eta={format_duration(eta)}",
+                flush=True,
+            )
 
     return callback
 

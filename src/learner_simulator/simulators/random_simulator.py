@@ -318,12 +318,29 @@ class RandomLearnerSimulator:
     def get_profile(self, uid: str) -> LearnerProfile:
         return self.profiles.get(uid) or default_profile(uid, self.global_rate.value(0.5))
 
-    def concept_options(self, true_concept: str, seed: int, count: int = 3) -> list[str]:
-        candidates = [label for label in self.concept_labels if label != true_concept]
+    def concept_options(
+        self,
+        true_concept: str | list[str] | tuple[str, ...],
+        seed: int,
+        count: int = 3,
+    ) -> list[str]:
+        """Return a compact option set containing every current-item concept.
+
+        Multi-concept items are not reduced to their first metadata route. The
+        option budget expands when necessary so every valid current concept can
+        be selected by the response agent.
+        """
+        if isinstance(true_concept, (list, tuple)):
+            truths = [str(value) for value in true_concept if str(value).strip()]
+        else:
+            truths = [str(true_concept)] if str(true_concept).strip() else []
+        truths = list(dict.fromkeys(truths)) or ["unknown knowledge concept"]
+        candidates = [label for label in self.concept_labels if label not in set(truths)]
         rng = random.Random(seed)
-        distractors = rng.sample(candidates, k=min(max(0, count - 1), len(candidates)))
-        options = [true_concept] + distractors
-        while len(options) < count:
+        target_count = max(int(count), len(truths))
+        distractors = rng.sample(candidates, k=min(max(0, target_count - len(truths)), len(candidates)))
+        options = truths + distractors
+        while len(options) < target_count:
             options.append("unknown knowledge concept")
         rng.shuffle(options)
         return options

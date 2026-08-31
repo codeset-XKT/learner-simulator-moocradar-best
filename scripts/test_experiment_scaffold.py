@@ -4,6 +4,7 @@ import argparse
 import json
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -16,11 +17,12 @@ from experiments.common import (  # noqa: E402
     build_archive_metadata,
     exclude_cohort_users,
     initialize_experiment_run,
+    run_experiment,
     save_report,
     validate_cohort,
     valid_metric_steps,
 )
-from learner_simulator.data import sequence_row_from_steps  # noqa: E402
+from learner_simulator.data import clean_sequence, sequence_row_from_steps  # noqa: E402
 from learner_simulator.evaluation import evaluate_steps  # noqa: E402
 from learner_simulator.agent4edu_baseline import (  # noqa: E402
     build_agent4edu_action_prompt,
@@ -28,6 +30,7 @@ from learner_simulator.agent4edu_baseline import (  # noqa: E402
 )
 from learner_simulator.simulators import Agent4EduBaselineSimulator  # noqa: E402
 import learner_simulator.simulators.agent4edu_simulator as agent4edu_module  # noqa: E402
+import learner_simulator.simulators.llm_simulator as llm_module  # noqa: E402
 
 
 def main() -> None:
@@ -36,6 +39,7 @@ def main() -> None:
     default_args = parser.parse_args([])
     assert default_args.include_prompt is True
     assert default_args.save_steps is True
+    assert default_args.parallel_learners == 1
     initialize_experiment_run(default_args)
     metadata = build_archive_metadata(
         default_args,
@@ -88,13 +92,11 @@ def main() -> None:
     assert parsed["simulated_correct"] == 1
     paper_variants = {
         "full",
-        "no-learner-state-profile",
-        "no-item-conditioned-integration",
+        "no-evidence-representation",
+        "no-state-item-alignment",
+        "no-structured-response-process",
         "no-dynamic-state-evolution",
-        "no-ncdm",
-        "no-irt",
-        "no-ncdm-irt",
-        "no-four-tier",
+        "direct-response-generation",
     }
     assert paper_variants == set(ABLATIONS)
 
@@ -211,9 +213,101 @@ def main() -> None:
     finally:
         agent4edu_module.call_openai_compatible_chat = original_chat
     second_step = simulation["steps"][1]
-    assert second_step["memory_context"]["short_memory"][-1]["source"] == "simulated_feedback"
-    assert second_step["memory_context"]["short_memory"][-1]["simulated_response"] == 1
+    # The official Agent4Edu loop receives the real post-attempt exercise
+    # score before constructing memory for the following interaction.
+    assert second_step["memory_context"]["short_memory"][-1]["source"] == "observed_feedback"
+    assert second_step["memory_context"]["short_memory"][-1]["simulated_response"] == 0
     assert second_step["memory_context"]["short_memory"][-1]["real_response"] == 0
+    assert second_step["agent4edu_feedback_mode"] == "official_observed_outcome"
+
+    def fake_full_chat(*args, **kwargs):
+        return (
+            "Attempt: Yes\n"
+            "IdentifiedConcept: concept 0\n"
+            "LearnerCorrect: Yes\n"
+            "StudentAnswer: A\n"
+            "AnswerConfidence: 0.80\n"
+            "StudentReasoning: I choose A.\n"
+            "ReasoningConfidence: 0.80"
+        )
+
+    original_full_chat = llm_module.call_openai_compatible_chat
+    llm_module.call_openai_compatible_chat = fake_full_chat
+    try:
+        full_report = run_experiment(
+            "full",
+            default_args,
+            questions,
+            [history_row],
+            [single_target_row],
+        )
+    finally:
+        llm_module.call_openai_compatible_chat = original_full_chat
+    assert full_report["validity"]["valid"] is True
+    assert full_report["validity"]["parsed_llm_steps"] == 1
+    assert full_report["all_steps"][0]["simulated_response"] == 1
+
+    # Learner-level workers must preserve cohort order even when completion
+    # order differs; per-learner sequence ordering remains simulator-owned.
+    parallel_args = parser.parse_args(["--parallel-learners", "2"])
+    parallel_args.dneuralcdm_checkpoint = "fake.pt"
+    parallel_history = [
+        sequence_row_from_steps(f"p{i}", history_steps) for i in range(2)
+    ]
+    parallel_targets = [
+        sequence_row_from_steps(f"p{i}", target_steps[:2]) for i in range(2)
+    ]
+
+    class FakeMultiRole:
+        def __init__(self, **kwargs):
+            pass
+
+        def fit(self, *args, **kwargs):
+            pass
+
+        def summary(self):
+            return {}
+
+        def simulate_sequence(self, row, progress_callback=None, **kwargs):
+            if row["uid"] == "p0":
+                time.sleep(0.03)
+            steps = []
+            for item in clean_sequence(row):
+                step = {
+                    "uid": row["uid"],
+                    "qid": item["qid"],
+                    "cid": item["cid"],
+                    "real_response": item["response"],
+                    "simulated_response": item["response"],
+                    "prediction_valid": True,
+                    "llm_parsed_action": {"learner_correct": item["response"]},
+                }
+                steps.append(step)
+                if progress_callback:
+                    progress_callback(step)
+            return {"uid": row["uid"], "steps": steps}
+
+    import experiments.common as common_module
+
+    original_multi_role = common_module.MultiRoleLearnerSimulator
+    common_module.MultiRoleLearnerSimulator = FakeMultiRole
+    try:
+        parallel_report = run_experiment(
+            "multi-role",
+            parallel_args,
+            questions,
+            parallel_history,
+            parallel_targets,
+        )
+    finally:
+        common_module.MultiRoleLearnerSimulator = original_multi_role
+    assert [step["uid"] for step in parallel_report["all_steps"]] == [
+        "p0",
+        "p0",
+        "p1",
+        "p1",
+    ]
+    assert parallel_report["validity"]["parsed_llm_steps"] == 4
     print("experiment_scaffold_test_ok")
 
 

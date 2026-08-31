@@ -11,6 +11,7 @@ def build_ability_profile(
     questions: dict[str, dict[str, Any]] | None = None,
     normalization_rows: list[dict[str, str]] | None = None,
     recent_window: int = 10,
+    precomputed_global_stats: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build an ability profile from observed behavior and global item stats.
 
@@ -22,7 +23,7 @@ def build_ability_profile(
 
     questions = questions or {}
     history = list(sequence)
-    global_stats = _global_stats(normalization_rows or [], questions)
+    global_stats = precomputed_global_stats or _global_stats(normalization_rows or [], questions)
     concept_stats = _concept_stats(history)
     distinct_concepts = len(concept_stats)
     coverage_ratio = (

@@ -11,6 +11,11 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from learner_simulator.formal_metrics import (  # noqa: E402
+    build_ability_difficulty_partition,
+    evaluate_formal_response_metrics,
+)
+
 from experiments.common import (  # noqa: E402
     add_shared_arguments,
     load_fixed_cohort,
@@ -22,30 +27,24 @@ from experiments.common import (  # noqa: E402
 
 ABLATIONS = {
     "full": {},
-    "no-learner-state-profile": {
-        "profile": False,
-        "cognitive_profile": False,
-        "ability_profile": False,
-    },
-    "no-item-conditioned-integration": {"item_conditioned_ability": False},
+    "no-evidence-representation": {"evidence_representation": False},
+    "no-state-item-alignment": {"state_item_alignment": False},
+    "no-structured-response-process": {"structured_response": False},
     "no-dynamic-state-evolution": {"dynamic_state_evolution": False},
-    "no-ncdm": {"ncdm_evidence": False},
-    "no-irt": {"irt_evidence": False},
-    "no-ncdm-irt": {
-        "ncdm_evidence": False,
-        "irt_evidence": False,
+    "direct-response-generation": {
+        "evidence_representation": False,
+        "state_item_alignment": False,
+        "structured_response": False,
+        "dynamic_state_evolution": False,
     },
-    "no-four-tier": {"four_tier": False},
 }
 
 PAPER_ABLATIONS = {
-    "no-learner-state-profile",
-    "no-item-conditioned-integration",
+    "no-evidence-representation",
+    "no-state-item-alignment",
+    "no-structured-response-process",
     "no-dynamic-state-evolution",
-    "no-ncdm",
-    "no-irt",
-    "no-ncdm-irt",
-    "no-four-tier",
+    "direct-response-generation",
 }
 
 
@@ -55,8 +54,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--variants",
         default=(
-            "full,no-learner-state-profile,no-item-conditioned-integration,"
-            "no-four-tier,no-dynamic-state-evolution"
+            "full,no-evidence-representation,no-state-item-alignment,"
+            "no-structured-response-process,no-dynamic-state-evolution"
         ),
         help="Comma-separated ablation variants.",
     )
@@ -114,13 +113,9 @@ def main() -> None:
         if stagger:
             time.sleep(stagger * variant_index[variant])
         modules = {
-            "profile": True,
-            "memory": True,
-            "cognitive_profile": True,
-            "ability_profile": True,
-            "item_conditioned_ability": True,
-            "four_tier": True,
-            "historical_reflection": True,
+            "evidence_representation": True,
+            "state_item_alignment": True,
+            "structured_response": True,
             "irt_evidence": True,
             "ncdm_evidence": True,
             "dynamic_state_evolution": True,
@@ -136,6 +131,32 @@ def main() -> None:
             progress_name=variant,
         )
         report["ablation_variant"] = variant
+        report["method_version"] = "formal-2026-08-26-v6-primaryroute-auditable-formalmetrics"
+        report["method_architecture"] = {
+            "conceptual_modules": [
+                "traceable-learner-evidence-representation",
+                "cognitive-state-item-alignment",
+                "structured-response-generation",
+                "auditable-state-evolution",
+            ],
+            "sequential_protocol": "sequential-feedback-and-state-update",
+            "response_contract": "single_pass_process_verifiable_v6_label_conditioned_answer_realization",
+            "information_flow": "module1_to_module2_to_module3_to_module4_no_bypass",
+            "evidence_selection": "fixed_role_hierarchy_without_manual_weight_fusion",
+            "multi_concept_policy": "primary_kc_route_only; preserve_primary_route_hierarchy_for_evidence",
+            "process_diagnostics": "evidence_grounded_process_audit_v1_noncausal",
+            "api_calls_per_item": 1,
+            "irt_calibration_scope": "cohort-history-transductive-no-target-labels",
+            "confidence_contract": "discrete_numeric_anchors_0.20_0.50_0.80",
+            "historical_context_policy": {
+                "external_repository": "all_observed_history",
+                "prompt_max_evidence": 4,
+                "prompt_max_full_questions": 2,
+                "prompt_evidence_char_budget": 2400,
+                "agent_memory": False,
+                "reflection": False,
+            },
+        }
         checkpoint = Path(args.checkpoint_dir) / f"{variant}.json"
         save_report(report, checkpoint)
         return variant, report
@@ -158,16 +179,61 @@ def main() -> None:
 
     reports = {variant: reports[variant] for variant in selected}
 
+    formal_metrics = _formal_metrics_on_common_population(reports, selected)
     combined = {
         "study": "ablation",
         "variants": selected,
         "same_fixed_cohort": True,
         "summary": {name: metric_view(report) for name, report in reports.items()},
+        "formal_metrics_v6": formal_metrics,
         "reports": reports,
     }
     output = args.output or "outputs/ablation/ablation.json"
     path = save_report(combined, output)
     print(json.dumps({"ok": True, "output": str(path), **combined["summary"]}, ensure_ascii=False, indent=2))
+
+
+def _formal_metrics_on_common_population(
+    reports: dict[str, dict],
+    selected: list[str],
+) -> dict:
+    """Evaluate every selected variant on exactly the same valid learners."""
+    if "full" not in reports:
+        return {
+            "available": False,
+            "reason": "the fixed ADCDE partition requires a full-model report",
+        }
+    per_variant_steps: dict[str, list[dict]] = {}
+    uid_sets: list[set[str]] = []
+    for variant in selected:
+        report = reports[variant]
+        excluded = {str(uid) for uid in report.get("metric_population", {}).get("excluded_uids", [])}
+        steps = [
+            step for step in (report.get("all_steps") or [])
+            if str(step.get("uid")) not in excluded
+            and step.get("real_response") in {0, 1}
+            and step.get("simulated_response") in {0, 1}
+        ]
+        per_variant_steps[variant] = steps
+        uid_sets.append({str(step.get("uid")) for step in steps})
+    common_uids = set.intersection(*uid_sets) if uid_sets else set()
+    fair_steps = {
+        variant: [step for step in steps if str(step.get("uid")) in common_uids]
+        for variant, steps in per_variant_steps.items()
+    }
+    partition = build_ability_difficulty_partition(fair_steps["full"])
+    return {
+        "available": True,
+        "metric_version": "formal_response_metrics_v6",
+        "fairness_policy": "intersection_of_valid_learner_uids_across_selected_variants",
+        "common_uid_count": len(common_uids),
+        "common_step_count": len(fair_steps["full"]),
+        "fixed_full_irt_2x2_partition": partition,
+        "methods": {
+            variant: evaluate_formal_response_metrics(steps, partition)
+            for variant, steps in fair_steps.items()
+        },
+    }
 
 
 if __name__ == "__main__":

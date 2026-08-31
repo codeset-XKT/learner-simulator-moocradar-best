@@ -10,8 +10,11 @@ The project reports four layers:
 
 - Response consistency: ACC, F1, Balanced Accuracy, Specificity, MCC, and AUC
   when a probability score is available.
-- Distribution consistency: Learner Distribution Error (LDE) and Concept
-  Distribution Error (CDE).
+- Distribution consistency: Agent4Edu-compatible ROUGE-3, Learner Distribution
+  Error (LDE), and Concept Distribution Error (CDE). ROUGE-3 compares each
+  learner's ordered simulated and real binary response sequences using
+  multiset trigram overlap. The paper-facing `rouge_3` value is macro F1 over
+  learners; precision, recall, and evaluated-user count are also archived.
 - Task consistency: learner-state/task availability, concept selection,
   response-generation consistency, and state-evolution diagnostics when the
   simulator exposes them.

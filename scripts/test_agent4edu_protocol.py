@@ -10,6 +10,12 @@ from learner_simulator.data import (  # noqa: E402
     clean_sequence,
     split_rows_agent4edu,
 )
+from learner_simulator.agent4edu_baseline import (  # noqa: E402
+    AGENT4EDU_ACTIVITY_MEAN,
+    AGENT4EDU_DIVERSITY_MEAN,
+    build_agent4edu_profile_prompt,
+    parse_agent4edu_action,
+)
 from learner_simulator.simulators import RandomLearnerSimulator  # noqa: E402
 
 
@@ -70,6 +76,29 @@ def main() -> None:
         first["memory_context"]["long_memory"]["latest_learning_status"]
         .startswith("source=observed_history")
     )
+
+    # The official parser normalizes both `Task1:` and the common `Task 1:`
+    # spelling before extracting the four fields.
+    parsed = parse_agent4edu_action(
+        "Task 1: Yes\nTask 2: concept 1\nTask 3: solve\nTask 4: No"
+    )
+    assert parsed is not None
+    assert parsed["attempt"] == "yes"
+    assert parsed["simulated_correct"] == 0
+
+    # Profile discretization must use the official global means rather than
+    # cohort-dependent thresholds.
+    profile_prompt = build_agent4edu_profile_prompt(
+        {
+            "activity_ratio": AGENT4EDU_ACTIVITY_MEAN + 1e-6,
+            "diversity_ratio": AGENT4EDU_DIVERSITY_MEAN + 1e-6,
+            "success_rate": 0.6,
+            "effective_ability": 0.5,
+            "preference_route": "concept 1",
+        }
+    )
+    assert "high activity" in profile_prompt
+    assert "high knowledge diversity" in profile_prompt
     print("agent4edu_protocol_test_ok")
 
 

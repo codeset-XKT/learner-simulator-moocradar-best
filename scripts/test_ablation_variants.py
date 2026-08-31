@@ -23,10 +23,10 @@ class FakeNCDMPredictor:
         return uid == "u1"
 
     def probability(self, prefix_steps, target_qid, target_cid):
-        return min(0.99, 0.5 + (0.001 * len(prefix_steps)))
+        return 0.72
 
     def knowledge_state(self, prefix_steps):
-        return {1: min(0.99, 0.5 + (0.001 * len(prefix_steps)))}
+        return {1: min(0.9, 0.60 + 0.001 * len(prefix_steps))}
 
 
 def main() -> None:
@@ -52,150 +52,138 @@ def main() -> None:
     target_row = sequence_row_from_steps("u1", target)
 
     with tempfile.TemporaryDirectory() as temp_dir:
-        checkpoint_path = Path(temp_dir) / "best_model.pt"
         simulator = MultiRoleLearnerSimulator(
             seed=42,
-            dneuralcdm_checkpoint_path=str(checkpoint_path),
+            dneuralcdm_checkpoint_path=str(Path(temp_dir) / "best_model.pt"),
         )
         simulator.dneuralcdm_response_predictor = FakeNCDMPredictor()
         simulator.fit([history_row], questions=questions)
         original = module.call_openai_compatible_chat
 
         def fake_chat(config, prompt, system_prompt=""):
-            if "# Reduced-response Learner Simulation Protocol #" in prompt:
-                return (
-                    "Attempt: Yes\nIdentifiedConcept: concept\n"
-                    "LearnerCorrect: Yes\nStudentAnswer: A"
-                )
-            if "LearnerCorrect:" not in prompt:
-                return "StudentAnswer: A"
+            if "# Direct Response Generation Contract #" in prompt:
+                return "IdentifiedConcept: concept\nLearnerCorrect: Yes\nStudentAnswer: A"
             return (
-                "Attempt: Yes\nIdentifiedConcept: concept\nLearnerCorrect: Yes\n"
+                "EvidenceRefs: hist_090\n"
+                "IdentifiedConcept: concept\nLearnerCorrect: Yes\n"
                 "StudentAnswer: A\nAnswerConfidence: 0.80\n"
                 "StudentReasoning: familiar rule\nReasoningConfidence: 0.80"
             )
 
         module.call_openai_compatible_chat = fake_chat
         try:
-            outputs = {
-                "full": _run(simulator, target_row, history_row, questions),
-                "no-profile": _run(
-                    simulator,
-                    target_row,
-                    history_row,
-                    questions,
-                    include_profile=False,
-                    include_cognitive_profile=False,
-                    include_ability_profile=False,
-                ),
-                "no-item": _run(
-                    simulator,
-                    target_row,
-                    history_row,
-                    questions,
-                    include_item_conditioned_ability=False,
-                ),
-                "no-four": _run(
-                    simulator,
-                    target_row,
-                    history_row,
-                    questions,
-                    response_format="reduced_response",
-                ),
-                "no-evolution": _run(
-                    simulator,
-                    target_row,
-                    history_row,
-                    questions,
-                    include_dynamic_state_evolution=False,
-                ),
-                "no-ncdm": _run(
-                    simulator,
-                    target_row,
-                    history_row,
-                    questions,
-                    include_ncdm_evidence=False,
-                ),
-                "no-irt": _run(
-                    simulator,
-                    target_row,
-                    history_row,
-                    questions,
-                    include_irt_evidence=False,
-                ),
-            }
+            full = _run(simulator, target_row, history_row, questions)
+            no_evidence = _run(
+                simulator,
+                target_row,
+                history_row,
+                questions,
+                include_evidence_representation=False,
+            )
+            no_alignment = _run(
+                simulator,
+                target_row,
+                history_row,
+                questions,
+                include_state_item_alignment=False,
+            )
+            no_process = _run(
+                simulator,
+                target_row,
+                history_row,
+                questions,
+                response_format="reduced_response",
+            )
+            no_evolution = _run(
+                simulator,
+                target_row,
+                history_row,
+                questions,
+                include_dynamic_state_evolution=False,
+            )
         finally:
             module.call_openai_compatible_chat = original
 
-    full_prompt = outputs["full"]["steps"][0]["response_agent_prompt"]
-    assert full_prompt.count("# NCDM State Evidence #") == 1
-    assert "current_item_response_probability" not in full_prompt
-    assert "response_probability_source" not in full_prompt
-    assert "KT Decision Anchor" not in full_prompt
-    assert "KT State Guidance" not in full_prompt
-    assert "Learning Tool State" not in full_prompt
-
-    for step in outputs["no-profile"]["steps"]:
-        assert step["learner_profile"] == {"uid": "u1"}
-        assert step["learner_profile_encoder"]["ablated"] is True
-        assert "profile" not in step["response_agent_prompt"].lower()
-    for step in outputs["no-item"]["steps"]:
-        assert step["item_conditioned_integration"]["ablated"] is True
-        assert "# Item-conditioned Integration #" not in step["response_agent_prompt"]
-        assert "# NCDM State Evidence #" in step["response_agent_prompt"]
-    for step in outputs["no-four"]["steps"]:
-        assert "# Reference Answer for Response Rendering #" in step["response_agent_prompt"]
-        assert "LearnerCorrect:" in step["response_agent_prompt"]
-        assert "# Four-tier Learner Simulation Protocol #" not in step["response_agent_prompt"]
-        assert "# Reduced-response Learner Simulation Protocol #" in step["response_agent_prompt"]
-        assert step["prediction_source"] == "llm_learner_correct"
-        assert step["response_decision_source"] == "learner_correct"
-        assert "four_tier_assessment" not in step
-    for step in outputs["no-evolution"]["steps"]:
-        assert step["state_evolution"]["ablated"] is True
-        assert step["feedback_response"] == step["real_response"]
-        assert step["state_evolution"]["knowledge_state_feedback_consumed"] is False
-        assert step["state_evolution"]["memory_feedback_consumed"] is True
-    assert [
-        step["ncdm_correct_probability"] for step in outputs["no-evolution"]["steps"]
-    ] == [step["ncdm_correct_probability"] for step in outputs["full"]["steps"]]
-    assert (
-        outputs["no-evolution"]["steps"][0]["ncdm_concept_mastery"]
-        == outputs["no-evolution"]["steps"][1]["ncdm_concept_mastery"]
-    )
-    assert (
-        outputs["full"]["steps"][0]["ncdm_concept_mastery"]
-        < outputs["full"]["steps"][1]["ncdm_concept_mastery"]
-    )
-    for step in outputs["no-ncdm"]["steps"]:
-        prompt = step["response_agent_prompt"]
-        assert "NCDM" not in prompt, [
-            line for line in prompt.splitlines() if "NCDM" in line
-        ]
-        assert step["ncdm_correct_probability"] is None
-        assert step["history_state_probability"] is not None
-    for step in outputs["no-irt"]["steps"]:
-        assert "IRT" not in step["response_agent_prompt"]
-        assert step["irt_ability_difficulty_evidence"] is None
+    first = full["steps"][0]
+    assert len(first["cognitive_state_item_alignment"]["selected_evidence"]) <= 4
+    alignment = first["cognitive_state_item_alignment"]
+    assert alignment["selection_policy"] == "hierarchical_role_based_evidence_selection_v1"
+    assert all("selection_tier" in event for event in alignment["selected_evidence"])
+    assert all("selection_score" not in event for event in alignment["selected_evidence"])
+    assert {event["selection_tier"] for event in alignment["selected_evidence"]} >= {
+        "same_concept_recent_success", "same_concept_recent_error"
+    }
+    assert "events" not in first["traceable_learner_evidence_representation"]
+    assert len(full["traceable_evidence_repository"]["events"]) == 90
+    assert first["traceable_learner_evidence_representation"]["ncdm_concept_state"]
+    assert "irt_learner_ability" in first["traceable_learner_evidence_representation"]
+    assert first["response_agent_prompt"].count("# Cognitive State-Item Alignment #") == 1
+    assert first["memory_context"]["used"] is False
+    assert "short-term memory" not in first["response_agent_prompt"].lower()
+    assert "long-term memory" not in first["response_agent_prompt"].lower()
+    assert first["agent_action"]["evidence_refs"] == ["hist_090"]
+    assert first["process_consistency"]["valid"] is True
+    assert set(first["simulation_tasks"]) == {
+        "module1_traceable_learner_evidence_representation",
+        "module2_cognitive_state_item_alignment",
+        "module3_structured_response_generation",
+        "module4_auditable_state_evolution",
+    }
+    assert no_evidence["steps"][0]["traceable_learner_evidence_representation"]["ablated"]
+    assert no_evidence["steps"][0]["cognitive_state_item_alignment"]["selected_evidence"] == []
+    assert no_evidence["steps"][0]["cognitive_state_item_alignment"]["concept_mastery"] is None
+    assert no_evidence["steps"][0]["cognitive_state_item_alignment"]["irt_ability"] is None
+    assert "NCDM concept mastery" not in no_evidence["steps"][0]["response_agent_prompt"]
+    assert "# NCDM State Evidence #" not in first["response_agent_prompt"]
+    assert "# IRT Ability-Difficulty Evidence #" not in first["response_agent_prompt"]
+    assert "# Traceable Learner Evidence Representation #" not in first["response_agent_prompt"]
+    assert no_alignment["steps"][0]["cognitive_state_item_alignment"]["ablated"]
+    assert no_alignment["steps"][0]["cognitive_state_item_alignment"]["concept_mastery"] is None
+    assert no_alignment["steps"][0]["cognitive_state_item_alignment"]["current_concepts"] == []
+    assert "unaligned_learner_state_summary" in no_alignment["steps"][0]["cognitive_state_item_alignment"]
+    assert "# Direct Response Generation Contract #" in no_process["steps"][0]["response_agent_prompt"]
+    assert "Strong aligned readiness" not in no_process["steps"][0]["response_agent_prompt"]
+    assert "four_tier_assessment" not in no_process["steps"][0]
+    assert no_evolution["steps"][0]["state_evolution"]["ablated"] is True
+    # LearnerCorrect is the simulated behavioral label. StudentAnswer is
+    # deterministically materialized so it cannot contradict that label.
+    def mismatch_chat(config, prompt, system_prompt=""):
+        return (
+            "EvidenceRefs: hist_090\n"
+            "IdentifiedConcept: concept\nLearnerCorrect: No\n"
+            "StudentAnswer: A\nAnswerConfidence: 0.80\n"
+            "StudentReasoning: familiar rule\nReasoningConfidence: 0.80"
+        )
+    module.call_openai_compatible_chat = mismatch_chat
+    try:
+        mismatch = _run(simulator, target_row, history_row, questions)
+    finally:
+        module.call_openai_compatible_chat = original
+    mismatch_step = mismatch["steps"][0]
+    assert mismatch_step["simulated_response"] == 0
+    assert mismatch_step["response_learner_correct"] == 0
+    assert mismatch_step["response_declared_learner_correct"] == 0
+    assert mismatch_step["learner_correct_answer_consistent"] is True
+    assert mismatch_step["prediction_source"] == "llm_learner_correct"
+    assert mismatch_step["agent_action"]["student_answer"] == "B"
+    assert "# Reference Answer for Response Rendering #" in mismatch_step["response_agent_prompt"]
 
     assert set(ABLATIONS) == {
         "full",
-        "no-learner-state-profile",
-        "no-item-conditioned-integration",
+        "no-evidence-representation",
+        "no-state-item-alignment",
+        "no-structured-response-process",
         "no-dynamic-state-evolution",
-        "no-ncdm",
-        "no-irt",
-        "no-ncdm-irt",
-        "no-four-tier",
+        "direct-response-generation",
     }
-    print("ablation_variants_test_ok")
+    print("ablation_variants_v3_test_ok")
 
 
 def _run(simulator, target, history, questions, **kwargs):
     return simulator.simulate_sequence(
         target,
         questions=questions,
-        llm_config={"model": "fake"},
+        llm_config={"model": "fake", "response_contract_retries": 99},
         call_llm=True,
         include_prompt=True,
         history_row=history,

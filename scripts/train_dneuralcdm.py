@@ -53,7 +53,7 @@ def main() -> None:
     output_dir = ROOT / args.output_dir if not Path(args.output_dir).is_absolute() else Path(args.output_dir)
     source_rows = take_sequence_rows(
         dataset_root / "kc_level" / "train_valid_sequences.csv",
-        args.source_rows,
+        None if args.source_rows <= 0 else args.source_rows,
     )
     cohort_path = None
     cohort_history_rows = []
@@ -106,6 +106,7 @@ def main() -> None:
     export_dneuralcdm_proficiency(export_rows, checkpoint, output_path)
     summary = {
         "ok": True,
+        "leakage_safe": True,
         "checkpoint": str(checkpoint),
         "proficiency": str(output_path),
         "train_users": len(train_rows),

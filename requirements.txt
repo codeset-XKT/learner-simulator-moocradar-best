@@ -1,2 +1,3 @@
-# Minimal scaffold uses only the Python standard library.
-
+# Prompt, simulation, and evaluation utilities otherwise use the standard library.
+# Knowledge-tracing models and the formal multi-role method require PyTorch.
+torch>=1.13

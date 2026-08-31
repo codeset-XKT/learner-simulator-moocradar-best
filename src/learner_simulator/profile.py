@@ -4,7 +4,7 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Any
 
-from learner_simulator.ability_profile import build_ability_profile
+from learner_simulator.ability_profile import _global_stats, build_ability_profile
 from learner_simulator.cognitive_profile import build_cognitive_profile
 from learner_simulator.data import clean_sequence
 
@@ -49,6 +49,8 @@ def build_learner_profiles(
 ) -> dict[str, LearnerProfile]:
     sequences = [(row["uid"], clean_sequence(row)) for row in rows]
     reference_rows = normalization_rows or rows
+    # This statistic is corpus-level; recomputing it per learner is redundant.
+    global_stats = _global_stats(reference_rows, questions or {})
 
     profiles: dict[str, LearnerProfile] = {}
     for uid, sequence in sequences:
@@ -62,6 +64,7 @@ def build_learner_profiles(
             sequence,
             questions=questions or {},
             normalization_rows=reference_rows,
+            precomputed_global_stats=global_stats,
         )
 
         profiles[uid] = LearnerProfile(

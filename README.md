@@ -1,10 +1,34 @@
-# Learner Simulator
+# Process-Grounded Learner Simulation
+
+## V6 source snapshot
+
+This branch is a source-only snapshot of the V6 primary-route implementation.
+It intentionally excludes datasets, evaluation cohorts, checkpoints, raw
+simulation outputs, API keys, and other run artifacts.
+
+V6 models sequential learner responses from 90 observed interactions to 10
+held-out target interactions. Its Full method contains four separable modules:
+
+1. provenance-bearing learner-evidence representation;
+2. deterministic learner-state/item alignment;
+3. structured learner-response generation; and
+4. auditable dynamic state evolution.
+
+For response-level evaluation, use BAA, Balanced Accuracy, F1, and ADCDE. The
+formal protocol evaluates each target response before teacher-forcing feedback
+is admitted to the next target step. On datasets that provide a knowledge-concept
+route, the primary item concept is `kc_routes[0]`; evidence retrieval may use
+additional routes without changing that primary mapping.
+
+The repository configuration never contains a production credential. Copy an
+example configuration and provide a key through a local environment variable or
+an ignored local `key.txt` file.
 
 This project studies LLM-based learner simulation under a fixed knowledge
 tracing style protocol. The active experiments compare this project's simulator
 against Agent4Edu-style and probability-sampling baselines on fixed cohorts.
 
-## Current Method
+## Historical and compatibility notes
 
 The current research method is exposed as the `multi-role` baseline name for
 backward compatibility. It is a compact process-oriented learner simulator:
@@ -331,7 +355,6 @@ Run offline regression tests before and after prompt or simulator changes:
 python scripts/test_agent4edu_protocol.py
 python scripts/test_four_tier.py
 python scripts/test_experiment_scaffold.py
-python scripts/test_cognitive_strategy.py
 python scripts/test_multi_role_simulator.py
 python scripts/test_evaluation_views.py
 ```

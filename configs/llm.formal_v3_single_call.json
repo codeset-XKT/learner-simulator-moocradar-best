@@ -1,0 +1,17 @@
+{
+  "provider": "openai_compatible",
+  "base_url": "https://ws-yipjtpx5o2k5spi2.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+  "model": "deepseek-v4-flash-0731",
+  "api_key_env": "DASHSCOPE_API_KEY",
+  "api_key_file": "key.txt",
+  "temperature": 0.0,
+  "max_tokens": 4096,
+  "output_retries": 0,
+  "response_contract_retries": 0,
+  "timeout_seconds": 240,
+  "max_retries": 0,
+  "retry_sleep_seconds": 0,
+  "transient_access_denied_retries": 0,
+  "stream": true,
+  "extra_body": {"enable_thinking": false}
+}

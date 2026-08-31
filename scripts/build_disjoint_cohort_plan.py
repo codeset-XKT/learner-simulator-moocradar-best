@@ -62,7 +62,7 @@ def main() -> None:
     questions = load_questions(dataset_root / "metadata" / "questions.json")
     rows = take_sequence_rows(
         dataset_root / "kc_level" / "train_valid_sequences.csv",
-        args.source_rows,
+        None if args.source_rows <= 0 else args.source_rows,
     )
     merged = merge_steps_by_uid(rows)
     required = args.history_steps + args.target_steps

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from collections import Counter, defaultdict
 from typing import Any
 
 
@@ -16,6 +17,10 @@ def evaluate_steps(steps: list[dict[str, Any]], threshold: float = 0.5) -> dict[
             "response_balanced_accuracy": None,
             "response_specificity": None,
             "response_mcc": None,
+            "rouge_3": None,
+            "rouge_3_precision": None,
+            "rouge_3_recall": None,
+            "rouge_3_user_count": 0,
             "learner_distribution_error": None,
             "concept_distribution_error": None,
             "mastery_response_monotonicity": None,
@@ -26,6 +31,7 @@ def evaluate_steps(steps: list[dict[str, Any]], threshold: float = 0.5) -> dict[
     y_prob = _optional_probabilities(steps, "p_correct")
     y_pred = [int(prob >= threshold) for prob in y_prob] if y_prob is not None else None
     y_sample = [int(step["simulated_response"]) for step in steps]
+    rouge_3 = response_sequence_rouge_n(steps, n=3)
 
     metrics = {
         "count": len(steps),
@@ -39,6 +45,10 @@ def evaluate_steps(steps: list[dict[str, Any]], threshold: float = 0.5) -> dict[
         ),
         "response_specificity": _round_or_none(specificity(y_true, y_sample)),
         "response_mcc": _round_or_none(matthews_corrcoef(y_true, y_sample)),
+        "rouge_3": _round_or_none(rouge_3["f1"]),
+        "rouge_3_precision": _round_or_none(rouge_3["precision"]),
+        "rouge_3_recall": _round_or_none(rouge_3["recall"]),
+        "rouge_3_user_count": rouge_3["user_count"],
         "learner_distribution_error": _round_or_none(
             grouped_rate_mae(steps, key="uid")
         ),
@@ -177,22 +187,63 @@ def evaluate_steps(steps: list[dict[str, Any]], threshold: float = 0.5) -> dict[
         )
         metrics.update(four_tier_consistency_metrics(four_tier))
 
-    cognitive_evidence = extract_cognitive_strategy_diagnostics(steps)
-    if cognitive_evidence:
-        metrics["cognitive_evidence_count"] = len(cognitive_evidence)
-        metrics["cognitive_evidence_counts"] = _counts(
-            [item["evidence_signal"] for item in cognitive_evidence]
-        )
-        metrics["cognitive_evidence_metrics"] = {
-            signal: _strategy_metrics(
-                [item for item in cognitive_evidence if item["evidence_signal"] == signal]
-            )
-            for signal in sorted({item["evidence_signal"] for item in cognitive_evidence})
-        }
     task_diagnostics = extract_simulation_task_diagnostics(steps)
     if task_diagnostics:
         metrics.update(simulation_task_metrics(task_diagnostics, threshold=threshold))
     return metrics
+
+
+def response_sequence_rouge_n(
+    steps: list[dict[str, Any]],
+    n: int = 3,
+) -> dict[str, Any]:
+    """Macro ROUGE-N over each learner's ordered binary response sequence.
+
+    This follows Agent4Edu's distribution-consistency use of ROUGE-3: the
+    candidate is the simulated correctness sequence and the reference is the
+    real correctness sequence. ``rouge_3`` reports the macro F1; precision and
+    recall are retained to make the exact aggregation convention auditable.
+    """
+    if n <= 0:
+        raise ValueError("n must be positive")
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for position, step in enumerate(steps):
+        if step.get("uid") is None:
+            continue
+        try:
+            real = int(step["real_response"])
+            simulated = int(step["simulated_response"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        grouped[str(step["uid"])].append(
+            {"position": position, "step_index": step.get("step_index"),
+             "real": real, "simulated": simulated}
+        )
+    scores: list[tuple[float, float, float]] = []
+    for items in grouped.values():
+        items.sort(key=lambda item: (
+            item["step_index"] is None,
+            item["step_index"] if item["step_index"] is not None else item["position"],
+        ))
+        if len(items) < n:
+            continue
+        reference = [item["real"] for item in items]
+        candidate = [item["simulated"] for item in items]
+        reference_ngrams = Counter(tuple(reference[i:i+n]) for i in range(len(reference)-n+1))
+        candidate_ngrams = Counter(tuple(candidate[i:i+n]) for i in range(len(candidate)-n+1))
+        overlap = sum((reference_ngrams & candidate_ngrams).values())
+        precision = overlap / sum(candidate_ngrams.values())
+        recall = overlap / sum(reference_ngrams.values())
+        f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+        scores.append((precision, recall, f1))
+    if not scores:
+        return {"precision": None, "recall": None, "f1": None, "user_count": 0}
+    return {
+        "precision": _mean([score[0] for score in scores]),
+        "recall": _mean([score[1] for score in scores]),
+        "f1": _mean([score[2] for score in scores]),
+        "user_count": len(scores),
+    }
 
 
 def flatten_simulations(simulations: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -439,14 +490,16 @@ def extract_four_tier_diagnostics(
                 assessment = parsed.get("four_tier_assessment")
         if not isinstance(assessment, dict):
             continue
+        answer_confidence = assessment.get("answer_confidence")
+        reasoning_confidence = assessment.get("reasoning_confidence")
         diagnostics.append(
             {
-                "answer_confidence": float(
-                    assessment.get("answer_confidence", 0.5)
-                ),
-                "reasoning_confidence": float(
-                    assessment.get("reasoning_confidence", 0.5)
-                ),
+                "answer_confidence": float(answer_confidence)
+                if isinstance(answer_confidence, (int, float))
+                else 0.5,
+                "reasoning_confidence": float(reasoning_confidence)
+                if isinstance(reasoning_confidence, (int, float))
+                else 0.5,
                 "answer_correct": assessment.get("answer_correct"),
                 "reasoning_correct": assessment.get("reasoning_correct"),
                 "learner_correct": (
@@ -463,31 +516,6 @@ def extract_four_tier_diagnostics(
     return diagnostics
 
 
-def extract_cognitive_strategy_diagnostics(
-    steps: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    diagnostics: list[dict[str, Any]] = []
-    for step in steps:
-        strategy = step.get("cognitive_strategy")
-        parsed = step.get("llm_parsed_action")
-        if not isinstance(strategy, dict):
-            continue
-        simulated_correct = None
-        if isinstance(parsed, dict) and parsed.get("simulated_correct") is not None:
-            try:
-                simulated_correct = int(parsed["simulated_correct"])
-            except (TypeError, ValueError):
-                simulated_correct = None
-        diagnostics.append(
-            {
-                "evidence_signal": _cognitive_evidence_signal(strategy),
-                "real_response": int(step["real_response"]),
-                "simulated_correct": simulated_correct,
-            }
-        )
-    return diagnostics
-
-
 def extract_simulation_task_diagnostics(
     steps: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -496,10 +524,25 @@ def extract_simulation_task_diagnostics(
         tasks = step.get("simulation_tasks")
         if not isinstance(tasks, dict):
             continue
-        task1 = tasks.get("task1_learner_state_profile")
-        task2 = tasks.get("task2_item_conditioned_integration")
-        task3 = tasks.get("task3_learner_response_generation")
-        task4 = tasks.get("task4_dynamic_state_evolution") or step.get("state_evolution")
+        task1 = (
+            tasks.get("module1_traceable_learner_evidence_representation")
+            or tasks.get("task1_learner_state_profile")
+        )
+        # Support current module names as well as frozen archive schemas.
+        task2 = (
+            tasks.get("module2_cognitive_state_item_alignment")
+            or tasks.get("task2_contextual_evidence_and_memory")
+        )
+        task3 = (
+            tasks.get("module3_structured_response_generation")
+            or tasks.get("task3_structured_learner_process_response")
+            or tasks.get("task3_learner_response_generation")
+        )
+        task4 = (
+            tasks.get("module4_auditable_state_evolution")
+            or tasks.get("task4_dynamic_state_evolution")
+            or step.get("state_evolution")
+        )
         diagnostics.append(
             {
                 "real_response": int(step["real_response"]),
@@ -516,7 +559,7 @@ def extract_simulation_task_diagnostics(
                     task2.get("concept_match") if isinstance(task2, dict) else None
                 ),
                 "task3_answer_correct": (
-                    task3.get("answer_correct") if isinstance(task3, dict) else None
+                    task3.get("learner_correct") if isinstance(task3, dict) else None
                 ),
                 "task3_answer_confidence": (
                     task3.get("answer_confidence") if isinstance(task3, dict) else None
@@ -777,15 +820,6 @@ def calibration_ece(
     return error
 
 
-def _cognitive_evidence_signal(strategy: dict[str, Any]) -> str:
-    related = strategy.get("related_history")
-    if isinstance(related, dict) and related.get("signal"):
-        return str(related["signal"])
-    if strategy.get("mode"):
-        return str(strategy["mode"])
-    return "cognitive_evidence_available"
-
-
 def _optional_float(value: Any) -> float | None:
     try:
         return float(value)
@@ -867,27 +901,6 @@ def _monotonicity_result(rates: dict[str, float | None]) -> dict[str, Any]:
         "rates": rates,
         "valid_comparisons": len(comparisons),
     }
-
-
-def _strategy_metrics(items: list[dict[str, Any]]) -> dict[str, Any]:
-    valid = [item for item in items if item["simulated_correct"] is not None]
-    result: dict[str, Any] = {
-        "count": len(items),
-        "llm_scored_count": len(valid),
-    }
-    if valid:
-        y_true = [item["real_response"] for item in valid]
-        y_pred = [int(item["simulated_correct"]) for item in valid]
-        result.update(
-            {
-                "acc": round(accuracy(y_true, y_pred), 6),
-                "f1": round(f1_score(y_true, y_pred), 6),
-                "real_correct_rate": round(_mean(y_true), 6),
-                "simulated_correct_rate": round(_mean(y_pred), 6),
-                "confusion": confusion_matrix(y_true, y_pred),
-            }
-        )
-    return result
 
 
 def _conditional_rate(

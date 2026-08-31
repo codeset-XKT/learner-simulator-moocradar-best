@@ -279,10 +279,14 @@ if nn is not None:
 
 
 class MIKTSequenceDataset:
-    def __init__(self, rows: list[dict[str, str]]) -> None:
+    def __init__(self, rows: list[dict[str, str]], mapping_rows: list[dict[str, str]] | None = None) -> None:
         require_torch()
-        self.question_id_map = _build_raw_id_map(rows, "qid")
-        self.concept_id_map = _build_raw_id_map(rows, "cid")
+        # Cohort rows may register item/concept identities but are never
+        # converted to labelled samples. This preserves complete formal-cohort
+        # coverage without response-label leakage.
+        identifier_rows = list(rows) + list(mapping_rows or [])
+        self.question_id_map = _build_raw_id_map(identifier_rows, "qid")
+        self.concept_id_map = _build_raw_id_map(identifier_rows, "cid")
         self.index_to_question = {
             int(value): int(key)
             for key, value in self.question_id_map.items()
@@ -297,6 +301,13 @@ class MIKTSequenceDataset:
         self.samples: list[tuple[list[int], list[float]]] = []
         self.max_seq_len = 0
 
+        for row in identifier_rows:
+            for step in clean_sequence(row):
+                question_index = self.question_id_map.get(str(step["qid"]))
+                concept_index = self.concept_id_map.get(str(step["cid"]))
+                if question_index is not None and concept_index is not None:
+                    self.question_to_concepts.setdefault(question_index, set()).add(concept_index)
+
         for row in rows:
             question_indices: list[int] = []
             labels: list[float] = []
@@ -308,7 +319,6 @@ class MIKTSequenceDataset:
                 response = int(step["response"])
                 question_indices.append(question_index)
                 labels.append(float(response))
-                self.question_to_concepts.setdefault(question_index, set()).add(concept_index)
             if len(question_indices) >= 2:
                 self.samples.append((question_indices, labels))
                 self.max_seq_len = max(self.max_seq_len, len(question_indices) - 1)
@@ -346,13 +356,18 @@ def train_mikt(
     seed: int = 42,
     log_every: int = 20,
     device_name: str | None = None,
+    mapping_rows: list[dict[str, str]] | None = None,
+    early_stopping_patience: int = 5,
+    early_stopping_min_delta: float = 5e-4,
 ) -> Path:
     require_torch()
     torch.manual_seed(seed)
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
 
-    dataset = MIKTSequenceDataset(rows)
+    if early_stopping_patience < 0 or early_stopping_min_delta < 0:
+        raise ValueError("early stopping arguments must be non-negative")
+    dataset = MIKTSequenceDataset(rows, mapping_rows=mapping_rows)
     train_data, val_data, _ = dataset.split_by_student()
     train_loader = make_mikt_loader(train_data, batch_size, True)
     val_loader = make_mikt_loader(val_data, batch_size, False)
@@ -375,6 +390,9 @@ def train_mikt(
     best_state = None
     best_val_auc = -1.0
     best_val_acc = -1.0
+    best_epoch = 0
+    epochs_without_improvement = 0
+    stopped_early = False
     epoch_summaries: list[dict[str, Any]] = []
 
     print(
@@ -449,13 +467,23 @@ def train_mikt(
                 "epoch_seconds": epoch_seconds,
             }
         )
-        if val_auc >= best_val_auc:
+        previous_best = best_val_auc
+        if val_auc > best_val_auc:
             best_val_auc = val_auc
             best_val_acc = val_acc
+            best_epoch = epoch
             best_state = {
                 key: value.detach().cpu().clone()
                 for key, value in model.state_dict().items()
             }
+        if val_auc > previous_best + early_stopping_min_delta:
+            epochs_without_improvement = 0
+        else:
+            epochs_without_improvement += 1
+        if early_stopping_patience and epochs_without_improvement >= early_stopping_patience:
+            stopped_early = True
+            print(f"MIKT early_stopping epoch={epoch} best_epoch={best_epoch} best_val_auc={best_val_auc:.4f}", flush=True)
+            break
 
     checkpoint_path = output / "best_model.pt"
     torch.save(
@@ -471,6 +499,10 @@ def train_mikt(
             "concept_id_map": dataset.concept_id_map,
             "best_val_acc": best_val_acc,
             "best_val_auc": best_val_auc,
+            "best_epoch": best_epoch,
+            "stopped_early": stopped_early,
+            "early_stopping_patience": early_stopping_patience,
+            "early_stopping_min_delta": early_stopping_min_delta,
             "epoch_summaries": epoch_summaries,
         },
         checkpoint_path,

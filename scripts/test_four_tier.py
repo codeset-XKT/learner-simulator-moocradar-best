@@ -17,8 +17,7 @@ from learner_simulator.evaluation import evaluate_steps  # noqa: E402
 
 
 def main() -> None:
-    raw = """Attempt: Yes
-IdentifiedConcept: decimal notation
+    raw = """IdentifiedConcept: decimal notation
 StudentAnswer: 500.050
 AnswerConfidence: 0.82
 StudentReasoning: The hundredths digit is 5 and the other decimal digits are zero.
@@ -85,7 +84,7 @@ ReasoningConfidence: 0.67"""
     assert "four_tier_response_count" not in answer_only_metrics
 
     reduced = parse_reduced_response(
-        "Attempt: Yes\nIdentifiedConcept: decimal notation\n"
+        "IdentifiedConcept: decimal notation\n"
         "LearnerCorrect: No\nStudentAnswer: B"
     )
     assert reduced is not None

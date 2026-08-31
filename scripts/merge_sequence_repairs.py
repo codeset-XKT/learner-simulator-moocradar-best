@@ -32,8 +32,9 @@ def parse_args() -> argparse.Namespace:
         "--allow-repair-token-budget-increase",
         action="store_true",
         help=(
-            "Allow a repair config whose only LLM difference is a larger "
-            "max_tokens value. The exception is recorded in the merged report."
+            "Allow a repair config whose only LLM differences are larger "
+            "max_tokens and/or timeout_seconds values. The operational exception "
+            "is recorded in the merged report."
         ),
     )
     return parser.parse_args()
@@ -66,6 +67,7 @@ def compatibility_signature(report: dict) -> dict:
         "feedback_mode": arguments.get("feedback_mode"),
         "llm_config_path": arguments.get("llm_config"),
         "llm_config": archive.get("llm_config"),
+        "implementation_fingerprint": archive.get("implementation_fingerprint"),
         "threshold": arguments.get("threshold"),
         "protocol": report.get("protocol"),
         "modules": report.get("modules"),
@@ -97,6 +99,8 @@ def token_budget_only_compatibility(
     repair_config = load_config(repair_path)
     expected_tokens = expected_config.pop("max_tokens", None)
     repair_tokens = repair_config.pop("max_tokens", None)
+    expected_timeout = expected_config.pop("timeout_seconds", None)
+    repair_timeout = repair_config.pop("timeout_seconds", None)
     if expected_config != repair_config:
         return None
     if not isinstance(expected_tokens, (int, float)) or not isinstance(
@@ -105,12 +109,20 @@ def token_budget_only_compatibility(
         return None
     if repair_tokens < expected_tokens:
         return None
+    if not isinstance(expected_timeout, (int, float)) or not isinstance(
+        repair_timeout, (int, float)
+    ):
+        return None
+    if repair_timeout < expected_timeout:
+        return None
     return {
-        "type": "max_tokens_increase_only",
+        "type": "operational_budget_increase_only",
         "base_config_path": expected_path,
         "repair_config_path": repair_path,
         "base_max_tokens": expected_tokens,
         "repair_max_tokens": repair_tokens,
+        "base_timeout_seconds": expected_timeout,
+        "repair_timeout_seconds": repair_timeout,
     }
 
 
@@ -160,10 +172,20 @@ def main() -> None:
     if not steps:
         raise ValueError("Base report does not contain all_steps")
 
-    repair_records = []
-    attempted_steps = len(steps)
+    prior_repairs = base_report.get("sequence_repairs", {})
+    repair_records = copy.deepcopy(prior_repairs.get("sources", []))
+    attempted_steps = int(
+        base_report.get("runtime", {}).get(
+            "actual_attempted_llm_steps_including_repairs",
+            len(steps),
+        )
+    )
     total_seconds = float(base_report.get("runtime", {}).get("total_seconds", 0.0))
-    replaced_uids: set[str] = set()
+    replaced_uids: set[str] = set(prior_repairs.get("replaced_uids", []))
+    prior_source_run_count = int(
+        base_report.get("runtime", {}).get("source_run_count", 1)
+    )
+    new_repair_count = 0
     for repair_path in args.repair:
         payload = load_payload(repair_path)
         report = report_for(payload, args.variant)
@@ -201,6 +223,7 @@ def main() -> None:
                 "compatibility_exception": compatibility_exception,
             }
         )
+        new_repair_count += 1
 
     metric_steps, excluded_uids = valid_metric_steps(
         str(base_report.get("experiment", "multi-role")), steps
@@ -221,7 +244,7 @@ def main() -> None:
     report["runtime"].update(
         {
             "actual_attempted_llm_steps_including_repairs": attempted_steps,
-            "source_run_count": 1 + len(repair_records),
+            "source_run_count": prior_source_run_count + new_repair_count,
         }
     )
     report["sample_steps"] = steps[:20]

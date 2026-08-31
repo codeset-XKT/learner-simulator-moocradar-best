@@ -10,6 +10,7 @@ RESPONSE_METRICS = [
     "balanced_acc",
     "specificity",
     "mcc",
+    "rouge_3",
     "auc",
     "confusion",
     "real_correct_rate",
@@ -17,6 +18,10 @@ RESPONSE_METRICS = [
 ]
 
 DISTRIBUTION_METRICS = [
+    "rouge_3",
+    "rouge_3_precision",
+    "rouge_3_recall",
+    "rouge_3_user_count",
     "learner_distribution_error",
     "concept_distribution_error",
     "real_correct_rate",
@@ -116,6 +121,7 @@ def compact_table_row(record: dict[str, Any]) -> dict[str, Any]:
         "balanced_acc": metrics.get("balanced_acc"),
         "specificity": metrics.get("specificity"),
         "mcc": metrics.get("mcc"),
+        "rouge_3": metrics.get("rouge_3"),
         "lde": metrics.get("learner_distribution_error"),
         "cde": metrics.get("concept_distribution_error"),
         "auc": metrics.get("auc"),
